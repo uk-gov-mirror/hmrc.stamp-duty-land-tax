@@ -16,7 +16,7 @@
 
 package connectors
 
-import models.AgentDetails
+import models.{AgentDetailsAfterCreation, AgentDetailsBeforeCreation}
 import models.response.SubmitAgentDetailsResponse
 import play.api.Logging
 import play.api.libs.json.Json
@@ -37,17 +37,21 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
 
   private val servicePath = config.getString("microservice.services.formp-proxy.url")
 
-  def getAgentDetails(storn: String)(implicit hc: HeaderCarrier): Future[Option[AgentDetails]] =
+  def getAgentDetails(storn: String, agentReferenceNumber: String)
+                     (implicit hc: HeaderCarrier): Future[Option[AgentDetailsAfterCreation]] =
     http.post(url"$base/$servicePath/manage-agents/agent-details")
-      .withBody(Json.obj("storn" -> storn))
-      .execute[Option[AgentDetails]]
+      .withBody(Json.obj(
+        "storn" -> storn,
+        "agentReferenceNumber" -> agentReferenceNumber
+      ))
+      .execute[Option[AgentDetailsAfterCreation]]
       .recover {
         case e: Throwable =>
           logger.error(s"[getAgentDetails]: ${e.getMessage}")
           throw new RuntimeException(e.getMessage)
       }
 
-  def submitAgentDetails(agentDetails: AgentDetails)(implicit hc: HeaderCarrier): Future[SubmitAgentDetailsResponse] =
+  def submitAgentDetails(agentDetails: AgentDetailsBeforeCreation)(implicit hc: HeaderCarrier): Future[SubmitAgentDetailsResponse] =
     http.post(url"$base/$servicePath/manage-agents/agent-details/submit")
       .withBody(Json.toJson(agentDetails))
       .execute[SubmitAgentDetailsResponse]
@@ -57,10 +61,10 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
           throw new RuntimeException(e.getMessage)
       }
 
-  def getAllAgents(storn: String)(implicit hc: HeaderCarrier): Future[List[AgentDetails]] =
+  def getAllAgents(storn: String)(implicit hc: HeaderCarrier): Future[List[AgentDetailsAfterCreation]] =
     http.post(url"$base/$servicePath/manage-agents/agent-details/get-all-agents")
       .withBody(Json.obj("storn" -> storn))
-      .execute[List[AgentDetails]]
+      .execute[List[AgentDetailsAfterCreation]]
       .recover {
         case e: Throwable =>
           logger.error(s"[getAllAgents]: ${e.getMessage}")

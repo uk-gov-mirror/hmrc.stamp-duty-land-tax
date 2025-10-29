@@ -16,7 +16,7 @@
 
 package uk.gov.hmrc.stampdutylandtax.controllers
 
-import models.AgentDetails
+import models.{AgentDetailsAfterCreation, AgentDetailsBeforeCreation}
 import play.api.Logging
 import play.api.libs.json.{JsValue, Json}
 import play.api.mvc.{Action, AnyContent, ControllerComponents}
@@ -33,10 +33,11 @@ class ManageAgentsController @Inject()(
   service: ManageAgentsService
 )(implicit ec: ExecutionContext) extends BackendController(cc) with Logging:
 
-  def getAgentDetails(storn: String): Action[AnyContent] = Action.async { implicit request =>
-    service.getAgentDetails(storn) map {
-      case Some(agentDetails: AgentDetails) => Ok(Json.toJson(agentDetails))
-      case None                             => NotFound(Json.obj("message" -> "Agent details not found"))
+  def getAgentDetails(storn: String, agentReferenceNumber: String): Action[AnyContent] = Action.async { implicit request =>
+    service.getAgentDetails(storn, agentReferenceNumber)
+      .map {
+        case Some(agentDetails) => Ok(Json.toJson(agentDetails))
+        case None               => NotFound(Json.obj("message" -> "Agent details not found"))
     } recover {
       case u: UpstreamErrorResponse =>
         Status(u.statusCode)(Json.obj("message" -> u.message))
@@ -75,7 +76,7 @@ class ManageAgentsController @Inject()(
   }
 
   def submitAgentDetails: Action[JsValue] = Action.async(parse.json) { implicit request =>
-    request.body.validate[AgentDetails].fold(
+    request.body.validate[AgentDetailsBeforeCreation].fold(
       invalid => Future.successful(BadRequest(Json.obj("message" -> s"Invalid payload: $invalid"))),
       payload =>
         service.submitAgentDetails(payload) map { submissionResponse =>
