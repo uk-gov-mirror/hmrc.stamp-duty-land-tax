@@ -16,7 +16,7 @@
 
 package base
 
-import models.AgentDetails
+import models.{AgentDetailsResponse, AgentDetailsRequest}
 import models.response.SubmitAgentDetailsResponse
 import org.scalatest.BeforeAndAfterEach
 import org.scalatest.concurrent.ScalaFutures
@@ -53,49 +53,55 @@ trait SpecBase
       )
       .build()
 
-  val testAgentDetails: AgentDetails = AgentDetails(
-    storn = "STN001",
-    name = "Acme Property Agents Ltd",
+  val testAgentDetailsRequest: AgentDetailsRequest = AgentDetailsRequest(
+    agentName = "Acme Property Agents Ltd",
     houseNumber = "64",
     addressLine1 = "Zoo Lane",
     addressLine2 = Some("Westminster"),
     addressLine3 = "London",
     addressLine4 = None,
     postcode = Some("SW1A 2AA"),
-    phoneNumber = "02079460000",
-    emailAddress = "test@example.com",
-    agentId = "AGT001",
-    isAuthorised = 1
+    phone = Some("02079460000"),
+    email = "test@example.com"
   )
 
-  val testAgentDetailsList: List[AgentDetails] = List(
-    AgentDetails(
-      storn = "STN001",
-      name = "Acme Property Agents Ltd",
+  val testAgentDetailsAfterCreation: AgentDetailsResponse = AgentDetailsResponse(
+    agentReferenceNumber = "ARN001",
+    agentName = "Acme Property Agents Ltd",
+    houseNumber = "64",
+    addressLine1 = "Zoo Lane",
+    addressLine2 = Some("Westminster"),
+    addressLine3 = "London",
+    addressLine4 = None,
+    postcode = Some("SW1A 2AA"),
+    phone = Some("02079460000"),
+    email = "test@example.com"
+  )
+
+  val testAgentDetailsList: List[AgentDetailsResponse] = List(
+    AgentDetailsResponse(
+      agentReferenceNumber = "ARN001",
+      agentName = "Acme Property Agents Ltd",
       houseNumber = "64",
       addressLine1 = "Zoo Lane",
       addressLine2 = Some("Westminster"),
       addressLine3 = "London",
       addressLine4 = None,
       postcode = Some("SW1A 2AA"),
-      phoneNumber = "02079460000",
-      emailAddress = "test@example.com",
-      agentId = "AGT001",
-      isAuthorised = 1
+      phone = Some("02079460000"),
+      email = "test@example.com"
     ),
-    AgentDetails(
-      storn = "STN002",
-      name = "BrightHomes Estates",
+    AgentDetailsResponse(
+      agentReferenceNumber = "ARN001",
+      agentName = "BrightHomes Estates",
       houseNumber = "12B",
       addressLine1 = "Maple Street",
       addressLine2 = Some("Camden"),
       addressLine3 = "London",
       addressLine4 = Some("Greater London"),
       postcode = Some("NW1 5LE"),
-      phoneNumber = "02071234567",
-      emailAddress = "info@brighthomes.co.uk",
-      agentId = "AGT002",
-      isAuthorised = 0
+      phone = Some("02071234567"),
+      email = "info@brighthomes.co.uk"
     )
   )
 

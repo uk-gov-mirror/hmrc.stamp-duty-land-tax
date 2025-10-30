@@ -17,7 +17,7 @@
 package service
 
 import connectors.FormpProxyConnector
-import models.AgentDetails
+import models.{AgentDetailsResponse, AgentDetailsRequest}
 import models.response.SubmitAgentDetailsResponse
 import uk.gov.hmrc.http.HeaderCarrier
 
@@ -27,16 +27,16 @@ import scala.concurrent.Future
 @Singleton
 class ManageAgentsService @Inject()(formp: FormpProxyConnector) {
 
-  def getAgentDetails(storn: String)
-                     (implicit hc: HeaderCarrier): Future[Option[AgentDetails]] =
-    formp.getAgentDetails(storn)
+  def getAgentDetails(storn: String, agentReferenceNumber: String)
+                     (implicit hc: HeaderCarrier): Future[Option[AgentDetailsResponse]] =
+    formp.getAgentDetails(storn, agentReferenceNumber)
 
-  def submitAgentDetails(agentDetails: AgentDetails)
+  def submitAgentDetails(agentDetails: AgentDetailsRequest)
                         (implicit hc: HeaderCarrier): Future[SubmitAgentDetailsResponse] =
     formp.submitAgentDetails(agentDetails)
 
   def getAllAgents(storn: String)
-                  (implicit hc: HeaderCarrier): Future[List[AgentDetails]] =
+                  (implicit hc: HeaderCarrier): Future[List[AgentDetailsResponse]] =
     formp.getAllAgents(storn)
 
   def removeAgent(storn: String, agentReferenceNumber: String)
