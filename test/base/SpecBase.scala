@@ -16,7 +16,7 @@
 
 package base
 
-import models.{AgentDetailsAfterCreation, AgentDetailsBeforeCreation}
+import models.{AgentDetailsResponse, AgentDetailsRequest}
 import models.response.SubmitAgentDetailsResponse
 import org.scalatest.BeforeAndAfterEach
 import org.scalatest.concurrent.ScalaFutures
@@ -53,7 +53,7 @@ trait SpecBase
       )
       .build()
 
-  val testAgentDetailsBeforeCreation: AgentDetailsBeforeCreation = AgentDetailsBeforeCreation(
+  val testAgentDetailsRequest: AgentDetailsRequest = AgentDetailsRequest(
     agentName = "Acme Property Agents Ltd",
     houseNumber = "64",
     addressLine1 = "Zoo Lane",
@@ -65,7 +65,7 @@ trait SpecBase
     email = "test@example.com"
   )
 
-  val testAgentDetailsAfterCreation: AgentDetailsAfterCreation = AgentDetailsAfterCreation(
+  val testAgentDetailsAfterCreation: AgentDetailsResponse = AgentDetailsResponse(
     agentReferenceNumber = "ARN001",
     agentName = "Acme Property Agents Ltd",
     houseNumber = "64",
@@ -78,8 +78,8 @@ trait SpecBase
     email = "test@example.com"
   )
 
-  val testAgentDetailsList: List[AgentDetailsAfterCreation] = List(
-    AgentDetailsAfterCreation(
+  val testAgentDetailsList: List[AgentDetailsResponse] = List(
+    AgentDetailsResponse(
       agentReferenceNumber = "ARN001",
       agentName = "Acme Property Agents Ltd",
       houseNumber = "64",
@@ -91,7 +91,7 @@ trait SpecBase
       phone = Some("02079460000"),
       email = "test@example.com"
     ),
-    AgentDetailsAfterCreation(
+    AgentDetailsResponse(
       agentReferenceNumber = "ARN001",
       agentName = "BrightHomes Estates",
       houseNumber = "12B",
