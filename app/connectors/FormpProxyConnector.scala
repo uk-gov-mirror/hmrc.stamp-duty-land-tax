@@ -33,13 +33,15 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
                                     config: ServicesConfig)
                                    (implicit ec: ExecutionContext) extends Logging {
 
-  private val base = config.baseUrl("formp-proxy")
+  private val useStub = config.getBoolean("features.stub-formp-enabled")
 
-  private val servicePath = config.getString("microservice.services.formp-proxy.url")
+  private val path =
+    if (useStub) config.baseUrl("stamp-duty-land-tax-stub")  + "/stamp-duty-land-tax-stub"
+    else         config.baseUrl("formp-proxy")
 
   def getAgentDetails(storn: String, agentReferenceNumber: String)
                      (implicit hc: HeaderCarrier): Future[Option[AgentDetailsResponse]] =
-    http.post(url"$base/$servicePath/manage-agents/agent-details")
+    http.post(url"$path/manage-agents/agent-details")
       .withBody(Json.obj(
         "storn" -> storn,
         "agentReferenceNumber" -> agentReferenceNumber
@@ -52,7 +54,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
       }
 
   def submitAgentDetails(agentDetails: AgentDetailsRequest)(implicit hc: HeaderCarrier): Future[SubmitAgentDetailsResponse] =
-    http.post(url"$base/$servicePath/manage-agents/agent-details/submit")
+    http.post(url"$path/manage-agents/agent-details/submit")
       .withBody(Json.toJson(agentDetails))
       .execute[SubmitAgentDetailsResponse]
       .recover {
@@ -62,7 +64,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
       }
 
   def getAllAgents(storn: String)(implicit hc: HeaderCarrier): Future[List[AgentDetailsResponse]] =
-    http.post(url"$base/$servicePath/manage-agents/agent-details/get-all-agents")
+    http.post(url"$path/manage-agents/agent-details/get-all-agents")
       .withBody(Json.obj("storn" -> storn))
       .execute[List[AgentDetailsResponse]]
       .recover {
@@ -73,7 +75,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
 
   def removeAgent(storn: String, agentReferenceNumber: String)
                  (implicit hc: HeaderCarrier): Future[Boolean] =
-    http.post(url"$base/$servicePath/manage-agents/agent-details/remove")
+    http.post(url"$path/manage-agents/agent-details/remove")
       .withBody(Json.obj(
         "storn" -> storn,
         "agentReferenceNumber" -> agentReferenceNumber
