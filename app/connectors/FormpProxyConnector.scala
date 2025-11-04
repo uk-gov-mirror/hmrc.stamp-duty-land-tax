@@ -33,11 +33,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
                                     config: ServicesConfig)
                                    (implicit ec: ExecutionContext) extends Logging {
 
-  private val useStub = config.getBoolean("features.stub-formp-enabled")
-
-  private val path =
-    if (useStub) config.baseUrl("stamp-duty-land-tax-stub") + config.getString("stamp-duty-land-tax-stub.baseUrl")
-    else         config.baseUrl("formp-proxy")
+  private val path = config.baseUrl("formp-proxy") + "/stamp-duty-land-tax-stub"
 
   def getAgentDetails(storn: String, agentReferenceNumber: String)
                      (implicit hc: HeaderCarrier): Future[Option[AgentDetailsResponse]] =
