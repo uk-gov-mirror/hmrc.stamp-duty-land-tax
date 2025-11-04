@@ -43,9 +43,6 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
 
   def getAgentDetails(storn: String, agentReferenceNumber: String)
                      (implicit hc: HeaderCarrier): Future[Option[AgentDetailsResponse]] = {
-
-    println(s"\npath: $path\n")
-
     http.post(url"$path/manage-agents/agent-details")
       .withBody(Json.obj(
         "storn" -> storn,
