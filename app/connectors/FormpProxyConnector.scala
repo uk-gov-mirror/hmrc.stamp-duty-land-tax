@@ -36,7 +36,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
   private val useStub = config.getBoolean("features.stub-formp-enabled")
 
   private val path =
-    if (useStub) config.baseUrl("stamp-duty-land-tax-stub")  + "/stamp-duty-land-tax-stub"
+    if (useStub) config.baseUrl("stamp-duty-land-tax-stub") + config.getString("stamp-duty-land-tax-stub.baseUrl")
     else         config.baseUrl("formp-proxy")
 
   def getAgentDetails(storn: String, agentReferenceNumber: String)
