@@ -35,12 +35,17 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
 
   private val useStub = config.getBoolean("features.stub-formp-enabled")
 
+  private val stubBasePath: String = config.getString("stamp-duty-land-tax-stub.baseUrl")
+
   private val path =
-    if (useStub) config.baseUrl("stamp-duty-land-tax-stub")  + "/stamp-duty-land-tax-stub"
+    if (useStub) config.baseUrl("stamp-duty-land-tax-stub")  + stubBasePath
     else         config.baseUrl("formp-proxy")
 
   def getAgentDetails(storn: String, agentReferenceNumber: String)
-                     (implicit hc: HeaderCarrier): Future[Option[AgentDetailsResponse]] =
+                     (implicit hc: HeaderCarrier): Future[Option[AgentDetailsResponse]] = {
+
+    println(s"\npath: $path\n")
+
     http.post(url"$path/manage-agents/agent-details")
       .withBody(Json.obj(
         "storn" -> storn,
@@ -52,6 +57,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
           logger.error(s"[getAgentDetails]: ${e.getMessage}")
           throw new RuntimeException(e.getMessage)
       }
+  }
 
   def submitAgentDetails(agentDetails: AgentDetailsRequest)(implicit hc: HeaderCarrier): Future[SubmitAgentDetailsResponse] =
     http.post(url"$path/manage-agents/agent-details/submit")
