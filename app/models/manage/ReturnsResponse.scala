@@ -18,6 +18,8 @@ package models.manage
 
 import play.api.libs.json.{Json, OFormat}
 
+import java.time.LocalDate
+
 case class ReturnsResponse(
                             storn              : String,
                             returnSummaryCount : Int,
@@ -32,7 +34,7 @@ case class ReturnSummary(
                           returnReference : String,
                           utrn            : String,
                           status          : String,
-                          dateSubmitted   : String,
+                          dateSubmitted   : LocalDate,
                           purchaserName   : String,
                           address         : String,
                           agentReference  : String
