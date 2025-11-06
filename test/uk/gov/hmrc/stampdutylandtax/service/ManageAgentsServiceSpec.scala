@@ -1,5 +1,3 @@
-package uk.gov.hmrc.stampdutylandtax.service
-
 /*
  * Copyright 2025 HM Revenue & Customs
  *
@@ -15,6 +13,8 @@ package uk.gov.hmrc.stampdutylandtax.service
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+package uk.gov.hmrc.stampdutylandtax.service
 
 import base.SpecBase
 import connectors.FormpProxyConnector
