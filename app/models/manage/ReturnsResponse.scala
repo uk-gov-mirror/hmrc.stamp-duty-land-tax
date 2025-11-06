@@ -29,13 +29,13 @@ object ReturnsResponse {
 }
 
 case class ReturnSummary(
-                          returnReference       : String,
-                          utrn                  : String,
-                          status                : String,
-                          dateSubmitted         : String,
-                          purchaserName         : String,
-                          address               : String,
-                          agentReferenceNumber  : String
+                          returnReference : String,
+                          utrn            : String,
+                          status          : String,
+                          dateSubmitted   : String,
+                          purchaserName   : String,
+                          address         : String,
+                          agentReference  : String
                         )
 
 object ReturnSummary {
