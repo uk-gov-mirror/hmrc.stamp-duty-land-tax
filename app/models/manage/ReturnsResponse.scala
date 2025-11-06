@@ -19,9 +19,9 @@ package models.manage
 import play.api.libs.json.{Json, OFormat}
 
 case class ReturnsResponse(
-                            storn:              String,
-                            returnSummaryCount: Int,
-                            returnSummaryList:  List[ReturnSummary]
+                            storn              : String,
+                            returnSummaryCount : Int,
+                            returnSummaryList  : List[ReturnSummary]
                           )
 
 object ReturnsResponse {
@@ -29,13 +29,13 @@ object ReturnsResponse {
 }
 
 case class ReturnSummary(
-                          returnReference: String,
-                          utrn:            String,
-                          status:          String,
-                          dateSubmitted:   String,
-                          purchaserName:   String,
-                          address:         String,
-                          agentReference:  String
+                          returnReference       : String,
+                          utrn                  : String,
+                          status                : String,
+                          dateSubmitted         : String,
+                          purchaserName         : String,
+                          address               : String,
+                          agentReferenceNumber  : String
                         )
 
 object ReturnSummary {
