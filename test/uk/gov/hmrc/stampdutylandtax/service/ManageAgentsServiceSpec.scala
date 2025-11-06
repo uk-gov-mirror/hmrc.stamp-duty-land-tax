@@ -33,7 +33,7 @@ class ManageAgentsServiceSpec extends SpecBase {
 
     "getAgentDetails" - {
 
-      "should return Some(AgentDetailsResponse) when connector returns Some" in new BaseSetup {
+      "should return Some(AgentDetailsResponse) when connector successfully finds an agent" in new BaseSetup {
         private val storn = "STN-123"
         private val arn   = "ARN-999"
         private val resp  = AgentDetailsResponse(
@@ -57,7 +57,7 @@ class ManageAgentsServiceSpec extends SpecBase {
         verify(mockFormp, times(1)).getAgentDetails(eqTo(storn), eqTo(arn))(any[HeaderCarrier])
       }
 
-      "should return None when connector returns None" in new BaseSetup {
+      "should return None when connector fails to find the agent by storn" in new BaseSetup {
         private val storn = "STN-123"
         private val arn   = "ARN-NONE"
 
@@ -86,7 +86,7 @@ class ManageAgentsServiceSpec extends SpecBase {
 
     "submitAgentDetails" - {
 
-      "should delegate to connector and return SubmitAgentDetailsResponse" in new BaseSetup {
+      "should delegate to connector and successfully return SubmitAgentDetailsResponse" in new BaseSetup {
         private val req = AgentDetailsRequest(
           agentName    = "Harborview Estates",
           houseNumber  = "22A",
@@ -134,7 +134,7 @@ class ManageAgentsServiceSpec extends SpecBase {
 
     "getAllAgents" - {
 
-      "should return a non-empty list when connector returns agents" in new BaseSetup {
+      "should return a non-empty list of agents when connector successfully returns a list of agents" in new BaseSetup {
         private val storn = "STN-ALL"
         private val list  = List(
           AgentDetailsResponse(
@@ -171,7 +171,7 @@ class ManageAgentsServiceSpec extends SpecBase {
         verify(mockFormp, times(1)).getAllAgents(eqTo(storn))(any[HeaderCarrier])
       }
 
-      "should return an empty list when connector returns Nil" in new BaseSetup {
+      "should return Nil when the connector successfully returns an empty list of agents" in new BaseSetup {
         private val storn = "STN-EMPTY"
 
         when(mockFormp.getAllAgents(eqTo(storn))(any[HeaderCarrier]))
@@ -198,7 +198,7 @@ class ManageAgentsServiceSpec extends SpecBase {
 
     "removeAgent" - {
 
-      "should return true when connector returns true" in new BaseSetup {
+      "should return true when the connector successfully removes an agent" in new BaseSetup {
         private val storn = "STN-DEL"
         private val arn   = "ARN-DEL"
 
@@ -210,7 +210,7 @@ class ManageAgentsServiceSpec extends SpecBase {
         verify(mockFormp, times(1)).removeAgent(eqTo(storn), eqTo(arn))(any[HeaderCarrier])
       }
 
-      "should return false when connector returns false" in new BaseSetup {
+      "should return false when connector fails to remove an agent" in new BaseSetup {
         private val storn = "STN-DEL"
         private val arn   = "ARN-NOT-FOUND"
 
