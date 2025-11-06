@@ -34,9 +34,9 @@ class ManageReturnsServiceSpec extends Matchers with ScalaFutures with SpecBase 
 
     "getReturns" - {
 
-      "should delegate to FormpProxyConnector and return Some(ReturnsResponse)" in new Setup {
+      "should delegate to FormpProxyConnector and return a successful ReturnsResponse" in new Setup {
         private val storn = "STN-123"
-        private val response = ReturnsResponse(storn, 5)
+        private val response = ReturnsResponse(storn, 5, Nil)
 
         when(mockFormpProxyConnector.getReturns(eqTo(storn))(any[HeaderCarrier]))
           .thenReturn(Future.successful(Some(response)))
@@ -47,7 +47,7 @@ class ManageReturnsServiceSpec extends Matchers with ScalaFutures with SpecBase 
         verify(mockFormpProxyConnector, times(1)).getReturns(eqTo(storn))(any[HeaderCarrier])
       }
 
-      "should delegate to FormpProxyConnector and return None when connector returns None" in new Setup {
+      "should delegate to FormpProxyConnector and return None when connector fails to find a return" in new Setup {
         private val storn = "STN-NONE"
 
         when(mockFormpProxyConnector.getReturns(eqTo(storn))(any[HeaderCarrier]))

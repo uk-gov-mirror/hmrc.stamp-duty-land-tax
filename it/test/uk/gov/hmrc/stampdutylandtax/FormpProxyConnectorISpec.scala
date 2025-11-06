@@ -51,7 +51,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
 
     val url = "/stamp-duty-land-tax-stub/manage-agents/agent-details"
 
-    "return AgentDetails when BE returns 200 with valid JSON" in {
+    "return AgentDetails when BE returns OK with valid JSON" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(s"""{"storn":"$storn","agentReferenceNumber":"$arn"}""", true, true))
@@ -91,7 +91,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
       ))
     }
 
-    "fail when BE returns 200 with invalid JSON" in {
+    "fail when BE returns OK with invalid JSON" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(s"""{"storn":"$storn","agentReferenceNumber":"$arn"}""", true, true))
@@ -104,7 +104,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
       ex.getMessage.toLowerCase must include ("error")
     }
 
-    "propagate an upstream error when BE returns 500" in {
+    "propagate an upstream error when BE returns INTERNAL_SERVER_ERROR" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(s"""{"storn":"$storn","agentReferenceNumber":"$arn"}""", true, true))
@@ -134,7 +134,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
       email        = "info@acmeagents.co.uk"
     )
 
-    "return SubmitAgentDetailsResponse when BE returns 200 with valid JSON" in {
+    "return SubmitAgentDetailsResponse when BE returns OK with valid JSON" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(Json.stringify(Json.toJson(payload)), true, true))
@@ -145,7 +145,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
       result mustBe SubmitAgentDetailsResponse(agentResourceRef = "ARN4324234")
     }
 
-    "fail when BE returns 200 with invalid JSON" in {
+    "fail when BE returns OK with invalid JSON" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(Json.stringify(Json.toJson(payload)), true, true))
@@ -158,7 +158,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
       ex.getMessage.toLowerCase must include ("agentresourceref")
     }
 
-    "propagate an upstream error when BE returns 500" in {
+    "propagate an upstream error when BE returns INTERNAL_SERVER_ERROR" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(Json.stringify(Json.toJson(payload)), true, true))
@@ -176,7 +176,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
 
     val url = "/stamp-duty-land-tax-stub/manage-agents/agent-details/get-all-agents"
 
-    "return a list of AgentDetails when BE returns 200 with valid JSON" in {
+    "return a list of AgentDetails when BE returns OK with valid JSON" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(s"""{"storn":"$storn"}""", true, true))
@@ -243,7 +243,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
       )
     }
 
-    "fail when BE returns 200 with invalid JSON" in {
+    "fail when BE returns OK with invalid JSON" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(s"""{"storn":"$storn"}""", true, true))
@@ -256,7 +256,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
       ex.getMessage.toLowerCase must include ("error")
     }
 
-    "propagate an upstream error when BE returns 500" in {
+    "propagate an upstream error when BE returns INTERNAL_SERVER_ERROR" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(s"""{"storn":"$storn"}""", true, true))
@@ -274,7 +274,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
 
     val url = "/stamp-duty-land-tax-stub/manage-agents/agent-details/remove"
 
-    "return true when BE returns 200 with valid JSON boolean" in {
+    "return true when BE returns OK with valid JSON boolean" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(s"""{"storn":"$storn","agentReferenceNumber":"$arn"}""", true, true))
@@ -285,7 +285,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
       result mustBe true
     }
 
-    "fail when BE returns 200 with invalid JSON" in {
+    "fail when BE returns OK with invalid JSON" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(s"""{"storn":"$storn","agentReferenceNumber":"$arn"}""", true, true))
@@ -298,7 +298,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
       ex.getMessage.toLowerCase must include ("jsboolean")
     }
 
-    "propagate an upstream error when BE returns 500" in {
+    "propagate an upstream error when BE returns INTERNAL_SERVER_ERROR" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(s"""{"storn":"$storn","agentReferenceNumber":"$arn"}""", true, true))
@@ -316,7 +316,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
 
     val url = "/stamp-duty-land-tax-stub/manage-returns/get-all"
 
-    "return ReturnsResponse when BE returns 200 with valid JSON" in {
+    "return ReturnsResponse when BE returns OK with valid JSON" in {
       val body =
         s"""
            |{
@@ -335,7 +335,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
       result mustBe Some(ReturnsResponse(storn = storn, returnSummaryCount = 3))
     }
 
-    "fail when BE returns 200 with invalid JSON" in {
+    "fail when BE returns OK with invalid JSON" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(s"""{"storn":"$storn"}""", true, true))
@@ -348,7 +348,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
       ex.getMessage.toLowerCase must include ("error")
     }
 
-    "propagate an upstream error when BE returns 500" in {
+    "propagate an upstream error when BE returns INTERNAL_SERVER_ERROR" in {
       stubFor(
         post(urlPathEqualTo(url))
           .withRequestBody(equalToJson(s"""{"storn":"$storn"}""", true, true))

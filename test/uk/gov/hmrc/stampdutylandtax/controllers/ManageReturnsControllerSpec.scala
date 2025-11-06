@@ -34,32 +34,33 @@ class ManageReturnsControllerSpec extends SpecBase {
 
   "ManageReturnsController" - {
 
-    "GET manage-returns/storn/:storn (getAgentDetails)" - {
+    ".getReturns" - {
 
-      "return OK with returns when service returns Some" in new BaseSetup {
+      "return OK with returns when service successfully returns a ReturnsResponse payload" in new BaseSetup {
         private val storn = "STN-123"
         private val payload = ReturnsResponse(
           storn              = storn,
-          returnSummaryCount = 3
+          returnSummaryCount = 3,
+          returnSummaryList = Nil
         )
 
         when(mockManageReturnsService.getReturns(eqTo(storn))(any[HeaderCarrier]))
           .thenReturn(Future.successful(Some(payload)))
 
-        val result: Future[Result] = controller.getAgentDetails(storn)(fakeRequest)
+        val result: Future[Result] = controller.getReturns(storn)(fakeRequest)
 
         status(result) mustBe OK
         contentAsJson(result) mustBe Json.toJson(payload)
         verify(mockManageReturnsService).getReturns(eqTo(storn))(any[HeaderCarrier])
       }
 
-      "return 404 with message when service returns None" in new BaseSetup {
+      "return NOT_FOUND with message when service fails to retrieve a payload" in new BaseSetup {
         private val storn = "STN-404"
 
         when(mockManageReturnsService.getReturns(eqTo(storn))(any[HeaderCarrier]))
           .thenReturn(Future.successful(None))
 
-        val result: Future[Result] = controller.getAgentDetails(storn)(fakeRequest)
+        val result: Future[Result] = controller.getReturns(storn)(fakeRequest)
 
         status(result) mustBe NOT_FOUND
         (contentAsJson(result) \ "message").as[String] mustBe s"No returns found for storn: $storn"
@@ -72,19 +73,19 @@ class ManageReturnsControllerSpec extends SpecBase {
         when(mockManageReturnsService.getReturns(eqTo(storn))(any[HeaderCarrier]))
           .thenReturn(Future.failed(UpstreamErrorResponse("boom from upstream", BAD_GATEWAY)))
 
-        val result: Future[Result] = controller.getAgentDetails(storn)(fakeRequest)
+        val result: Future[Result] = controller.getReturns(storn)(fakeRequest)
 
         status(result) mustBe BAD_GATEWAY
         (contentAsJson(result) \ "message").as[String] must include("boom from upstream")
       }
 
-      "return 500 Unexpected error on unknown exception" in new BaseSetup {
+      "return INTERNAL_SERVER_ERROR Unexpected error on unknown exception" in new BaseSetup {
         private val storn = "STN-ERR"
 
         when(mockManageReturnsService.getReturns(eqTo(storn))(any[HeaderCarrier]))
           .thenReturn(Future.failed(new RuntimeException("unexpected")))
 
-        val result: Future[Result] = controller.getAgentDetails(storn)(fakeRequest)
+        val result: Future[Result] = controller.getReturns(storn)(fakeRequest)
 
         status(result) mustBe INTERNAL_SERVER_ERROR
         (contentAsJson(result) \ "message").as[String] must equal("Unexpected error")
