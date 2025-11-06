@@ -32,7 +32,7 @@ class ManageReturnsController @Inject()(
   service: ManageReturnsService
 )(implicit ec: ExecutionContext) extends BackendController(cc) with Logging:
 
-  def getAgentDetails(storn: String): Action[AnyContent] = Action.async { implicit request =>
+  def getReturns(storn: String): Action[AnyContent] = Action.async { implicit request =>
     service.getReturns(storn)
       .map {
         case Some(returnItem) => Ok(Json.toJson(returnItem))
@@ -41,7 +41,7 @@ class ManageReturnsController @Inject()(
       case u: UpstreamErrorResponse =>
         Status(u.statusCode)(Json.obj("message" -> u.message))
       case t: Throwable =>
-        logger.error("[getAgentDetails] failed", t)
+        logger.error("[ManageReturnsController][getReturns] failed", t)
         InternalServerError(Json.obj("message" -> "Unexpected error"))
     }
   }
