@@ -321,7 +321,8 @@ class FormpProxyConnectorISpec extends AnyWordSpec
         s"""
            |{
            |  "storn": "$storn",
-           |  "returnSummaryCount": 3
+           |  "returnSummaryCount": 3,
+           |  "returnSummaryList": []
            |}
          """.stripMargin
 
@@ -332,7 +333,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
       )
 
       val result = connector.getReturns(storn).futureValue
-      result mustBe Some(ReturnsResponse(storn = storn, returnSummaryCount = 3))
+      result mustBe Some(ReturnsResponse(storn = storn, returnSummaryCount = 3, Nil))
     }
 
     "fail when BE returns OK with invalid JSON" in {
