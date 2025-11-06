@@ -21,22 +21,23 @@ import play.api.libs.json.{Json, OFormat}
 case class ReturnsResponse(
                             storn:              String,
                             returnSummaryCount: Int,
+                            returnSummaryList:  List[ReturnSummary]
                           )
 
 object ReturnsResponse {
   implicit val format: OFormat[ReturnsResponse] = Json.format[ReturnsResponse]
 }
 
-case class ReturnSummaryList(
-                              returnReference: String,
-                              utrn:            String,
-                              status:          String,
-                              dateSubmitted:   String,
-                              purchaserName:   String,
-                              address:         String,
-                              agentReference:  String
-                            )
+case class ReturnSummary(
+                          returnReference: String,
+                          utrn:            String,
+                          status:          String,
+                          dateSubmitted:   String,
+                          purchaserName:   String,
+                          address:         String,
+                          agentReference:  String
+                        )
 
-object ReturnSummaryList {
-  implicit val format: OFormat[ReturnSummaryList] = Json.format[ReturnSummaryList]
+object ReturnSummary {
+  implicit val format: OFormat[ReturnSummary] = Json.format[ReturnSummary]
 }
