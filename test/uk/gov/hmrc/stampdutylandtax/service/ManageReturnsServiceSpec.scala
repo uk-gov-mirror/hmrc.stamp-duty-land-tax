@@ -18,7 +18,7 @@ package uk.gov.hmrc.stampdutylandtax.service
 
 import base.SpecBase
 import connectors.FormpProxyConnector
-import models.manage.ReturnsResponse
+import models.manage.SdltReturnRecordResponse
 import org.mockito.ArgumentMatchers.{any, eq as eqTo}
 import org.mockito.Mockito.{times, verify, when}
 import org.scalatest.concurrent.ScalaFutures
@@ -36,7 +36,7 @@ class ManageReturnsServiceSpec extends Matchers with ScalaFutures with SpecBase 
 
       "should delegate to FormpProxyConnector and return a successful ReturnsResponse" in new Setup {
         private val storn = "STN-123"
-        private val response = ReturnsResponse(storn, 5, Nil)
+        private val response = SdltReturnRecordResponse(storn, 5, Nil)
 
         when(mockFormpProxyConnector.getReturns(eqTo(storn))(any[HeaderCarrier]))
           .thenReturn(Future.successful(Some(response)))

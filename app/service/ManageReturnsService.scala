@@ -17,7 +17,7 @@
 package service
 
 import connectors.FormpProxyConnector
-import models.manage.ReturnsResponse
+import models.manage.SdltReturnRecordResponse
 import uk.gov.hmrc.http.HeaderCarrier
 
 import javax.inject.{Inject, Singleton}
@@ -27,7 +27,7 @@ import scala.concurrent.Future
 class ManageReturnsService @Inject()(formp: FormpProxyConnector) {
 
   def getReturns(storn: String)
-                (implicit hc: HeaderCarrier): Future[Option[ReturnsResponse]] =
+                (implicit hc: HeaderCarrier): Future[Option[SdltReturnRecordResponse]] =
     formp
       .getReturns(storn)
 }

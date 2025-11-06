@@ -16,7 +16,7 @@
 
 package connectors
 
-import models.manage.ReturnsResponse
+import models.manage.SdltReturnRecordResponse
 import models.{AgentDetailsRequest, AgentDetailsResponse}
 import models.response.SubmitAgentDetailsResponse
 import play.api.Logging
@@ -85,12 +85,12 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
       }
   
   def getReturns(storn: String)
-                (implicit hc: HeaderCarrier): Future[Option[ReturnsResponse]] =
+                (implicit hc: HeaderCarrier): Future[Option[SdltReturnRecordResponse]] =
     http.post(url"$path/manage-returns/get-all")
       .withBody(Json.obj(
         "storn" -> storn
       ))
-      .execute[Option[ReturnsResponse]]
+      .execute[Option[SdltReturnRecordResponse]]
       .recover {
         case e: Throwable =>
           logger.error(s"[FormpProxyConnector][getReturns]: ${e.getMessage}")

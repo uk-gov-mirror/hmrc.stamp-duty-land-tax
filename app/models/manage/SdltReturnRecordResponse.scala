@@ -20,14 +20,14 @@ import play.api.libs.json.{Json, OFormat}
 
 import java.time.LocalDate
 
-case class ReturnsResponse(
-                            storn              : String,
-                            returnSummaryCount : Int,
-                            returnSummaryList  : List[ReturnSummary]
-                          )
+case class SdltReturnRecordResponse(
+                                    storn              : String,
+                                    returnSummaryCount : Int,
+                                    returnSummaryList  : List[ReturnSummary]
+                                  )
 
-object ReturnsResponse {
-  implicit val format: OFormat[ReturnsResponse] = Json.format[ReturnsResponse]
+object SdltReturnRecordResponse {
+  implicit val format: OFormat[SdltReturnRecordResponse] = Json.format[SdltReturnRecordResponse]
 }
 
 case class ReturnSummary(

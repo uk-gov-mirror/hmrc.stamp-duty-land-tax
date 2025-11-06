@@ -25,7 +25,7 @@ import com.github.tomakehurst.wiremock.client.WireMock.{
 }
 import itutil.ApplicationWithWiremock
 import models.{AgentDetailsRequest, AgentDetailsResponse}
-import models.manage.ReturnsResponse
+import models.manage.SdltReturnRecordResponse
 import models.response.SubmitAgentDetailsResponse
 import org.scalatest.concurrent.{IntegrationPatience, ScalaFutures}
 import org.scalatest.matchers.must.Matchers
@@ -333,7 +333,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
       )
 
       val result = connector.getReturns(storn).futureValue
-      result mustBe Some(ReturnsResponse(storn = storn, returnSummaryCount = 3, Nil))
+      result mustBe Some(SdltReturnRecordResponse(storn = storn, returnSummaryCount = 3, Nil))
     }
 
     "fail when BE returns OK with invalid JSON" in {
