@@ -46,7 +46,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
       .execute[Option[AgentDetailsResponse]]
       .recover {
         case e: Throwable =>
-          logger.error(s"[getAgentDetails]: ${e.getMessage}")
+          logger.error(s"[FormpProxyConnector][getAgentDetails]: ${e.getMessage}")
           throw new RuntimeException(e.getMessage)
       }
 
@@ -56,7 +56,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
       .execute[SubmitAgentDetailsResponse]
       .recover {
         case e: Throwable =>
-          logger.error(s"[submitAgentDetails]: ${e.getMessage}")
+          logger.error(s"[FormpProxyConnector][submitAgentDetails]: ${e.getMessage}")
           throw new RuntimeException(e.getMessage)
       }
 
@@ -66,7 +66,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
       .execute[List[AgentDetailsResponse]]
       .recover {
         case e: Throwable =>
-          logger.error(s"[getAllAgents]: ${e.getMessage}")
+          logger.error(s"[FormpProxyConnector][getAllAgents]: ${e.getMessage}")
           throw new RuntimeException(e.getMessage)
       }
 
@@ -80,7 +80,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
       .execute[Boolean]
       .recover {
         case e: Throwable =>
-          logger.error(s"[removeAgent]: ${e.getMessage}")
+          logger.error(s"[FormpProxyConnector][removeAgent]: ${e.getMessage}")
           throw new RuntimeException(e.getMessage)
       }
   
@@ -93,7 +93,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
       .execute[Option[ReturnsResponse]]
       .recover {
         case e: Throwable =>
-          logger.error(s"[getReturns]: ${e.getMessage}")
+          logger.error(s"[FormpProxyConnector][getReturns]: ${e.getMessage}")
           throw new RuntimeException(e.getMessage)
       }
 }
