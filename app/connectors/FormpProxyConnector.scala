@@ -16,7 +16,8 @@
 
 package connectors
 
-import models.{AgentDetailsResponse, AgentDetailsRequest}
+import models.manage.SdltReturnRecordResponse
+import models.{AgentDetailsRequest, AgentDetailsResponse}
 import models.response.SubmitAgentDetailsResponse
 import play.api.Logging
 import play.api.libs.json.Json
@@ -45,7 +46,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
       .execute[Option[AgentDetailsResponse]]
       .recover {
         case e: Throwable =>
-          logger.error(s"[getAgentDetails]: ${e.getMessage}")
+          logger.error(s"[FormpProxyConnector][getAgentDetails]: ${e.getMessage}")
           throw new RuntimeException(e.getMessage)
       }
 
@@ -55,7 +56,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
       .execute[SubmitAgentDetailsResponse]
       .recover {
         case e: Throwable =>
-          logger.error(s"[submitAgentDetails]: ${e.getMessage}")
+          logger.error(s"[FormpProxyConnector][submitAgentDetails]: ${e.getMessage}")
           throw new RuntimeException(e.getMessage)
       }
 
@@ -65,7 +66,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
       .execute[List[AgentDetailsResponse]]
       .recover {
         case e: Throwable =>
-          logger.error(s"[getAllAgents]: ${e.getMessage}")
+          logger.error(s"[FormpProxyConnector][getAllAgents]: ${e.getMessage}")
           throw new RuntimeException(e.getMessage)
       }
 
@@ -79,7 +80,20 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
       .execute[Boolean]
       .recover {
         case e: Throwable =>
-          logger.error(s"[removeAgent]: ${e.getMessage}")
+          logger.error(s"[FormpProxyConnector][removeAgent]: ${e.getMessage}")
+          throw new RuntimeException(e.getMessage)
+      }
+  
+  def getReturns(storn: String)
+                (implicit hc: HeaderCarrier): Future[Option[SdltReturnRecordResponse]] =
+    http.post(url"$path/manage-returns/get-all")
+      .withBody(Json.obj(
+        "storn" -> storn
+      ))
+      .execute[Option[SdltReturnRecordResponse]]
+      .recover {
+        case e: Throwable =>
+          logger.error(s"[FormpProxyConnector][getReturns]: ${e.getMessage}")
           throw new RuntimeException(e.getMessage)
       }
 }

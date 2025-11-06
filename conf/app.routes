@@ -5,3 +5,5 @@ GET         /manage-agents/agent-details/get                uk.gov.hmrc.stampdut
 POST        /manage-agents/agent-details/submit             uk.gov.hmrc.stampdutylandtax.controllers.ManageAgentsController.submitAgentDetails
 GET         /manage-agents/agent-details/get-all-agents     uk.gov.hmrc.stampdutylandtax.controllers.ManageAgentsController.getAllAgents(storn: String)
 GET         /manage-agents/agent-details/remove             uk.gov.hmrc.stampdutylandtax.controllers.ManageAgentsController.removeAgent(storn: String, agentReferenceNumber: String)
+
+GET         /manage-returns/get-returns                     uk.gov.hmrc.stampdutylandtax.controllers.ManageReturnsController.getReturns(storn: String)
