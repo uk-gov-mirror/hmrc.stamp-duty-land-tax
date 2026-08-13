@@ -39,6 +39,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
   private val stubPath = config.baseUrl("stamp-duty-land-tax-stub") + "/stamp-duty-land-tax-stub"
   private val formpPath = config.baseUrl("formp-proxy") + "/formp-proxy"
   val stubFormPBool: Boolean = config.getBoolean("features.stub-formp-enabled")
+  private val internalAuthToken: String = config.getString("internal-auth.token")
 
   def submitAgentDetails(createPredefinedAgentRequest: CreatePredefinedAgentRequest)(implicit hc: HeaderCarrier): Future[CreatePredefinedAgentResponse] =
     val url: URL = if(stubFormPBool) url"$stubPath/create/predefined-agent" else url"$formpPath/create/predefined-agent"
@@ -114,6 +115,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
   def getReturnsForPurge(request: GetReturnsForPurgeRequest)(implicit hc: HeaderCarrier): Future[ReturnsForPurgeResponse] =
     val url: URL = if (stubFormPBool) url"$stubPath/returns-for-purge" else url"$formpPath/returns-for-purge"
     http.post(url)
+      .setHeader("Authorization" -> internalAuthToken)
       .withBody(Json.toJson(request))
       .execute[ReturnsForPurgeResponse]
       .recover {
@@ -128,6 +130,7 @@ class FormpProxyConnector @Inject()(http: HttpClientV2,
   def deleteReturn(request: DeleteReturnRequest)(implicit hc: HeaderCarrier): Future[DeleteReturnResponse] =
     val url: URL = if (stubFormPBool) url"$stubPath/delete/return" else url"$formpPath/delete/return"
     http.post(url)
+      .setHeader("Authorization" -> internalAuthToken)
       .withBody(Json.toJson(request))
       .execute[DeleteReturnResponse]
       .recover {

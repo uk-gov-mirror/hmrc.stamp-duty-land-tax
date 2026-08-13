@@ -24,6 +24,7 @@ import models.purge.{DeleteReturnRequest, DeleteReturnResponse, GetReturnsForPur
 import org.scalatest.concurrent.{IntegrationPatience, ScalaFutures}
 import org.scalatest.matchers.must.Matchers
 import org.scalatest.wordspec.AnyWordSpec
+import play.api.http.HeaderNames.AUTHORIZATION
 import play.api.http.Status.*
 import play.api.libs.json.Json
 import uk.gov.hmrc.http.HeaderCarrier
@@ -40,6 +41,8 @@ class FormpProxyConnectorISpec extends AnyWordSpec
 
   private val connectorWithStub: FormpProxyConnector = appWithSubOn.injector.instanceOf[FormpProxyConnector]
   private val connectorWithFormP: FormpProxyConnector = appWithSubOff.injector.instanceOf[FormpProxyConnector]
+
+  private val internalAuthToken: String = appWithSubOff.configuration.get[String]("internal-auth.token")
 
   private val storn = "STN001"
   private val arn   = "ARN001"
@@ -576,7 +579,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
     val formpUrl = "/formp-proxy/returns-for-purge"
     val request  = GetReturnsForPurgeRequest(LocalDate.parse("2026-07-06"))
 
-    "return the returns due for purge" in {
+    "present the internal-auth token and return the returns due for purge" in {
       stubFor(
         post(urlPathEqualTo(formpUrl))
           .willReturn(aResponse().withStatus(OK).withBody("""{ "returnsForPurge": [] }"""))
@@ -584,10 +587,10 @@ class FormpProxyConnectorISpec extends AnyWordSpec
 
       connectorWithFormP.getReturnsForPurge(request).futureValue mustBe ReturnsForPurgeResponse(Nil)
 
-      verify(postRequestedFor(urlPathEqualTo(formpUrl)))
+      verify(postRequestedFor(urlPathEqualTo(formpUrl)).withHeader(AUTHORIZATION, equalTo(internalAuthToken)))
     }
 
-    "fail with a 401 error when formp-proxy rejects the request" in {
+    "fail with a 401 error when formp-proxy will not accept the token" in {
       stubFor(
         post(urlPathEqualTo(formpUrl))
           .willReturn(aResponse().withStatus(UNAUTHORIZED))
@@ -605,7 +608,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
     val formpUrl = "/formp-proxy/delete/return"
     val request  = DeleteReturnRequest(storn = "STN001", returnResourceRef = "9000001")
 
-    "return the delete response" in {
+    "carry the internal-auth token through to formp-proxy and return the delete response" in {
       stubFor(
         post(urlPathEqualTo(formpUrl))
           .willReturn(aResponse().withStatus(OK).withBody("""{ "deleted": true }"""))
@@ -613,7 +616,7 @@ class FormpProxyConnectorISpec extends AnyWordSpec
 
       connectorWithFormP.deleteReturn(request).futureValue mustBe DeleteReturnResponse(deleted = true)
 
-      verify(postRequestedFor(urlPathEqualTo(formpUrl)))
+      verify(postRequestedFor(urlPathEqualTo(formpUrl)).withHeader(AUTHORIZATION, equalTo(internalAuthToken)))
     }
 
     "fail with a 401 error when formp-proxy rejects the request" in {
