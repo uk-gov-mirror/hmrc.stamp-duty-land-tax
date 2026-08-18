@@ -20,13 +20,16 @@ import com.google.inject.Inject
 import play.api.Logging
 import uk.gov.hmrc.http.{HeaderCarrier, UpstreamErrorResponse}
 import connectors.{ChrisConnector, EmailServiceConnector}
+import connectors.FilingFormpProxyConnector
 import models.email.EmailServiceRequest
 import models.filing.*
+import models.polling.SubmissionForPolling
 import models.submission.*
+import service.PollOutcome
 import service.filing.ChrisService
-import uk.gov.hmrc.play.bootstrap.config.ServicesConfig
 
 import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
+import java.time.{Clock, LocalDateTime}
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import scala.concurrent.{ExecutionContext, Future}
@@ -54,8 +57,9 @@ class SubmissionService @Inject() (
                                     connector: ChrisConnector,
                                     audit: SubmissionAuditService,
                                     chrisService: ChrisService,
-                                    appConfig: ServicesConfig,
-                                    emailService: EmailService
+                                    emailService: EmailService,
+                                    filingConnector: FilingFormpProxyConnector,
+                                    clock: Clock
                                   )(implicit ec: ExecutionContext)
   extends Logging:
 
@@ -75,7 +79,7 @@ class SubmissionService @Inject() (
         logger.info(s"[SubmissionService] submit START returnId=${ctx0.returnId} storn=${ctx0.storn} version=${ctx0.version} sender=$sender periodEnd=$periodEnd hasExistingSubmission=${fullReturn.submission.isDefined} corrId=$correlationId")
         val started: Future[SubmissionOutcome] = for
           submissionId     <- prepareReturn(ctx0, fullReturn, correlationId, email)
-          ctx              =  ctx0.copy(submissionId = Some(submissionId))
+          ctx              =  ctx0.copy(submissionId = submissionId)
           submitUrl        <- prepareGovTalkStatus(ctx, correlationId)
           built            <- buildAndValidate(ctx, fullReturn, sender, periodEnd, correlationId)
           (envelope, seed) = built
@@ -157,10 +161,15 @@ class SubmissionService @Inject() (
             val storedUrl = existing.gatewayUrl.map(_.trim).filter(_.nonEmpty)
             logger.info(s"[SubmissionService] RESETTING GovTalk Status formResultId=${ctx.formResultId} corrId=$correlationId oldProtocol=$status storedGatewayUrl=${storedUrl.getOrElse("-")} -> this value will be used as the ChRIS submit URL")
             chrisService
-              .resetGovTalkStatus(buildResetRequest(ctx, correlationId, status))
-              .map { _ =>
+              .resetGovTalkStatus(buildResetRequest(ctx.storn, ctx.formResultId, status))
+              .flatMap { _ =>
                 logger.info(s"[SubmissionService] GovTalk Status reset OK formResultId=${ctx.formResultId} corrId=$correlationId resolvedSubmitUrl=${storedUrl.getOrElse("<default>")}")
-                storedUrl
+                setGovTalkCorrelationId(ctx.storn, ctx.formResultId, correlationId)
+                  .recoverWith { case e =>
+                    logger.error(s"[SubmissionService] aborting submit reason=correlation-id-write-failed returnId=${ctx.returnId} corrId=$correlationId: ${e.getMessage}")
+                    Future.failed(e)
+                  }
+                  .map(_ => None)
               }
 
           case _ =>
@@ -216,15 +225,15 @@ class SubmissionService @Inject() (
         numberOfPolls        = "0",
         pollInterval         = "0",
         protocolStatus       = "initial",
-        gatewayUrl           = appConfig.baseUrl("chris")
+        gatewayUrl           = connector.defaultPath
       )
     )
 
-  private def buildResetRequest(ctx: SubmissionContext, correlationId: String, oldProtocol: String): ResetGovTalkStatusRequest =
+  private def buildResetRequest(storn: String, formResultId: String, oldProtocol: String): ResetGovTalkStatusRequest =
     val now = nowSqlTimestamp
     ResetGovTalkStatusRequest(
-      userIdentifier = ctx.storn,
-      formResultId   = ctx.formResultId,
+      userIdentifier = storn,
+      formResultId   = formResultId,
       correlationId  = "empty",
       govTalkStatus  = GovTalkStatusReset(
         formLock             = "N",
@@ -235,7 +244,7 @@ class SubmissionService @Inject() (
         pollInterval         = "0",
         protocolStatusOld    = oldProtocol,
         protocolStatusNew    = "initial",
-        gatewayUrl           = appConfig.baseUrl("chris")
+        gatewayUrl           = connector.defaultPath
       )
     )
 
@@ -262,7 +271,7 @@ class SubmissionService @Inject() (
           IRMarkRecieved        = None,
           utrn                  = None,
           email                 = None,
-          submissionRequestDate = None,
+          submissionRequestDate = fullReturn.submission.flatMap(_.submissionRequestDate),
           acceptedDate          = None,
           submittableStatus     = Some("PENDING"),
           govTalkErrorCode      = None,
@@ -283,7 +292,7 @@ class SubmissionService @Inject() (
     val req = UpdateGovTalkStatusLockRequest(
       userIdentifier = ctx.storn,
       formResultId   = ctx.formResultId,
-      govTalkStatus  = GovTalkStatusLock(formLockOld = "N", formLockNew = "Y", pollInterval = "0", gatewayUrl = appConfig.baseUrl("chris"))
+      govTalkStatus  = GovTalkStatusLock(formLockOld = "N", formLockNew = "Y", pollInterval = "0", gatewayUrl = connector.defaultPath)
     )
     chrisService.updateGovTalkStatusLock(req).map { _ =>
       logger.info(s"[SubmissionService] GovTalk lock ACQUIRED formResultId=${ctx.formResultId} corrId=$correlationId")
@@ -293,20 +302,43 @@ class SubmissionService @Inject() (
       Future.failed(GovTalkLockNotAcquiredException(ctx.formResultId, e))
     }
 
-  private def releaseGovTalkLock(ctx: SubmissionContext, correlationId: String)(implicit hc: HeaderCarrier): Future[Unit] =
-    logger.info(s"[SubmissionService] releasing GovTalk lock (Y->N) formResultId=${ctx.formResultId} corrId=$correlationId")
-    val req = UpdateGovTalkStatusLockRequest(
-      userIdentifier = ctx.storn,
-      formResultId   = ctx.formResultId,
-      govTalkStatus  = GovTalkStatusLock(formLockOld = "Y", formLockNew = "N", pollInterval = "0", gatewayUrl = appConfig.baseUrl("chris"))
-    )
-    chrisService.updateGovTalkStatusLock(req).map { _ =>
-      logger.info(s"[SubmissionService] GovTalk lock RELEASED formResultId=${ctx.formResultId} corrId=$correlationId")
-      ()
-    }.recover { case e =>
-      logger.error(s"[SubmissionService] GovTalk lock release FAILED (suppressed) formResultId=${ctx.formResultId} corrId=$correlationId", e)
-      ()
-    }
+  private def selectGovTalkRow(storn: String, formResultId: String)
+                               (implicit hc: HeaderCarrier): Future[Option[SelectGovTalkStatusResponse]] =
+    chrisService.selectGovTalkStatus(SelectGovTalkStatusRequest(storn, formResultId))
+      .map(row => Option.when(row.formResultId.exists(_.trim.nonEmpty))(row))
+
+  private def releaseGovTalkLock(storn: String, formResultId: String, ref: String, correlationId: String, fallback: Option[SelectGovTalkStatusResponse] = None)
+                                (implicit hc: HeaderCarrier): Future[Unit] =
+    selectGovTalkRow(storn, formResultId)
+      .recover { case e =>
+        val consequence =
+          if fallback.isDefined then "fallback=pre-poll-row"
+          else "fallback=defaults"
+        logger.warn(s"[$logPrefix] lock release re-read failed, $consequence ${logRef(storn, ref, correlationId)}: ${e.getMessage}")
+        None
+      }
+      .flatMap {
+        case Some(fresh) if !fresh.formLock.map(_.trim).contains("Y") =>
+          logger.info(s"[$logPrefix] GovTalk lock already released ${logRef(storn, ref, correlationId)}")
+          Future.unit
+        case fresh =>
+          val current = fresh.orElse(fallback)
+          chrisService.updateGovTalkStatusLock(buildLockRequest(
+            storn,
+            formResultId,
+            formLockOld  = "Y",
+            formLockNew  = "N",
+            pollInterval = current.map(pollIntervalOf).getOrElse("0"),
+            gatewayUrl   = current.flatMap(_.gatewayUrl)
+          )).map { _ =>
+            logger.info(s"[$logPrefix] GovTalk lock released ${logRef(storn, ref, correlationId)}")
+            ()
+          }
+      }
+      .recover { case e =>
+        logger.error(s"[$logPrefix] lock release failed, row stays locked ${logRef(storn, ref, correlationId)}: ${e.getMessage}")
+        ()
+      }
 
   private def sendAndHandle(ctx: SubmissionContext,
                             fullReturn: FullReturn,
@@ -334,18 +366,19 @@ class SubmissionService @Inject() (
       logger.info(s"[SubmissionService] post-submit cleanup returnId=${ctx.returnId} corrId=$correlationId skipDatetimeFooter=$skipDatetime outcome=${outcome.fold(_.getClass.getSimpleName, _._1.getClass.getSimpleName)}")
 
       val stampDatetime: Future[Unit] = outcome match
-        case Success((_, finalAcc)) if !skipDatetime =>
+        case Success((_, finalAcc)) if !skipDatetime && !hasSubmissionRequestDate(fullReturn) =>
           ensureSubmissionRequestDatetime(ctx, finalAcc, correlationId)
         case _ =>
           Future.unit
 
       (for
-        _ <- releaseGovTalkLock(ctx, correlationId)
+        _ <- releaseGovTalkLock(ctx.storn, ctx.formResultId, ctx.returnId, correlationId)
         _ <- stampDatetime
       yield ()).transformWith(_ => Future.fromTry(outcome.map(_._1)))
     }
 
   private val RecoverableNumbers: Set[String] = Set("1000", "2005", "3000")
+
 
   private def isRecoverable(errors: Seq[GovTalkError]): Boolean =
     errors.exists(_.number.exists(RecoverableNumbers.contains))
@@ -365,22 +398,57 @@ class SubmissionService @Inject() (
     val universal = UniversalStatus.fromChrisResponse(resp, Some(sentIrMark))
     logger.info(s"[SubmissionService] resolved returnId=${ctx.returnId} corrId=$correlationId universalStatus=$universal responseType=${resp.getClass.getSimpleName}")
 
+    adoptChrisCorrelationId(ctx, resp, correlationId).flatMap { (corrId, stored) =>
     resp match
       case c: ChrisResponse.Completed =>
         logger.info(s"[SubmissionService] handling COMPLETED returnId=${ctx.returnId} corrId=$correlationId utrn=${c.utrn.getOrElse("-")} receivedIrMark=${c.receivedIrMark.getOrElse("-")}")
-        successBranch(ctx, fullReturn, c, universal, seed, correlationId, email)
+        successBranch(ctx, fullReturn, c, universal, seed, corrId, email)
 
       case a: ChrisResponse.Acknowledged =>
         logger.info(s"[SubmissionService] handling ACKNOWLEDGED returnId=${ctx.returnId} corrId=$correlationId pollInterval=${a.pollIntervalSeconds.getOrElse(0)}")
-        acknowledgementBranch(ctx, a, seed, correlationId)
+        acknowledgementBranch(ctx, a, seed, corrId, stored)
 
       case e: ChrisResponse.Errored =>
         logger.warn(s"[SubmissionService] handling ERRORED returnId=${ctx.returnId} corrId=$correlationId errorCount=${e.errors.size} numbers=${e.errors.flatMap(_.number).mkString(",")}")
-        errorBranch(ctx, fullReturn, e.errors, e.responseEndPoint, universal, seed, correlationId)
+        errorBranch(ctx, fullReturn, e.errors, e.responseEndPoint, universal, seed, corrId)
 
       case ChrisResponse.TransportError(msg, _) =>
         logger.error(s"[SubmissionService] handling TRANSPORT ERROR returnId=${ctx.returnId} corrId=$correlationId: $msg")
-        errorBranch(ctx, fullReturn, Nil, None, universal, seed, correlationId)
+        errorBranch(ctx, fullReturn, Nil, None, universal, seed, corrId)
+    }
+
+  private def adoptChrisCorrelationId(ctx: SubmissionContext, resp: ChrisResponse, sent: String)
+                                     (implicit hc: HeaderCarrier): Future[(String, Boolean)] =
+    val assigned = resp match
+      case c: ChrisResponse.Completed    => c.correlationId
+      case a: ChrisResponse.Acknowledged => a.correlationId
+      case e: ChrisResponse.Errored      => e.correlationId
+      case _: ChrisResponse.TransportError => None
+
+    assigned.map(_.trim).filter(id => id.nonEmpty && id != sent) match
+      case Some(fromChris) =>
+        logger.info(s"[SubmissionService] adopting ChRIS correlation id returnId=${ctx.returnId} sent=$sent assigned=$fromChris")
+        setGovTalkCorrelationId(ctx.storn, ctx.formResultId, fromChris)
+          .map(_ => (fromChris, true))
+          .recover { case e =>
+            logger.error(s"[SubmissionService] assigned correlation id not stored returnId=${ctx.returnId} assigned=$fromChris: ${e.getMessage}")
+            (fromChris, false)
+          }
+      case None =>
+        Future.successful((sent, true))
+
+  private def setGovTalkCorrelationId(storn: String, formResultId: String, correlationId: String)
+                                     (implicit hc: HeaderCarrier): Future[Unit] =
+    chrisService.updateGovTalkStatusCorrelationId(UpdateGovTalkStatusCorrelationIdRequest(
+      userIdentifier = storn,
+      formResultId   = formResultId,
+      correlationId  = correlationId,
+      pollInterval   = 0,
+      gatewayUrl     = connector.defaultPath
+    )).map { _ =>
+      logger.info(s"[$logPrefix] GovTalk correlation id stored ${logRef(storn, formResultId, correlationId)}")
+      ()
+    }
 
   private def successBranch(ctx: SubmissionContext,
                             fullReturn: FullReturn,
@@ -393,19 +461,19 @@ class SubmissionService @Inject() (
     logger.info(s"[SubmissionService] SUCCESS branch returnId=${ctx.returnId} corrId=$correlationId universalStatus=$universal responseEndPoint=${resp.responseEndPoint.getOrElse("-")}")
     for
       acc1    <- persistStatus(ctx, seed, universal, correlationId)
-      _       <- updateGovTalkStatistics(ctx, resp.responseEndPoint, None, correlationId)
-      _       <- setGovTalkProtocol(ctx, "deleteRequest", correlationId)
-      deleted <- sendChrisDelete(ctx, resp.responseEndPoint, correlationId)
-      _       <- if deleted then finaliseGovTalkStatus(ctx, correlationId)
+      _       <- updateGovTalkStatistics(ctx.storn, ctx.formResultId, resp.responseEndPoint, None, correlationId)
+      _       <- setGovTalkProtocol(ctx.storn, ctx.formResultId, "deleteRequest", correlationId)
+      deleted <- sendChrisDelete(ctx.storn, ctx.returnId, resp.responseEndPoint, correlationId)
+      _       <- if deleted then finaliseGovTalkStatus(ctx.storn, ctx.formResultId, correlationId)
       else {
         logger.warn(s"[SubmissionService] ChRIS delete unsuccessful; leaving GovTalk at deleteRequest (no endState/reset) returnId=${ctx.returnId} corrId=$correlationId")
         Future.unit
       }
       _       <- audit.auditSubmission(ctx.storn, ctx.returnId, correlationId, fullReturn, resp)
-      acc2    <- persistUpdate(ctx, acc1.copy(
+      acc2    <- persistUpdate(ctx.storn, ctx.returnId, acc1.copy(
         IRMarkRecieved = resp.receivedIrMark,
         utrn           = resp.utrn,
-        acceptedDate   = Some(nowIso)     // spec F52 step 14.3: set accepted date on success (no datetime in response -> now)
+        acceptedDate   = Some(resp.acceptedTime.getOrElse(nowIso))
       ), correlationId)
       _ <- emailService.submitEmailConfirmation(fullReturn, resp.utrn.toString, email)
       _       =  logger.info(s"[SubmissionService] SUCCESS branch complete returnId=${ctx.returnId} corrId=$correlationId utrn=${resp.utrn.getOrElse("-")}")
@@ -413,29 +481,33 @@ class SubmissionService @Inject() (
 
   // spec F52 step 14.1.3: after a successful delete, mark endState and then RESET the GovTalk status row.
   // Error-suppressed: this is post-success housekeeping and must never turn an accepted filing into a failure.
-  private def finaliseGovTalkStatus(ctx: SubmissionContext, correlationId: String)(implicit hc: HeaderCarrier): Future[Unit] =
-    (for
-      _ <- setGovTalkProtocol(ctx, "endState", correlationId)
-      _ <- chrisService.resetGovTalkStatus(buildResetRequest(ctx, correlationId, "endState")).map(_ => ())
-    yield {
-      logger.info(s"[SubmissionService] GovTalk Status finalised (endState + reset) formResultId=${ctx.formResultId} corrId=$correlationId")
+  private def finaliseGovTalkStatus(storn: String, formResultId: String, correlationId: String)(implicit hc: HeaderCarrier): Future[Unit] =
+    (for {
+      _ <- setGovTalkProtocol(storn, formResultId, "endState", correlationId)
+      _ <- chrisService.resetGovTalkStatus(buildResetRequest(storn, formResultId, "endState")).map(_ => ())
+    } yield {
+      logger.info(s"[SubmissionService] GovTalk Status finalised (endState + reset) formResultId=$formResultId corrId=$correlationId")
       ()
     }).recover { case e =>
-      logger.warn(s"[SubmissionService] GovTalk finalise (endState/reset) FAILED (suppressed) formResultId=${ctx.formResultId} corrId=$correlationId: ${e.getMessage}")
+      logger.warn(s"[SubmissionService] GovTalk finalise (endState/reset) FAILED (suppressed) formResultId=$formResultId corrId=$correlationId: ${e.getMessage}")
       ()
     }
 
   private def acknowledgementBranch(ctx: SubmissionContext,
                                     resp: ChrisResponse.Acknowledged,
                                     seed: SubmissionUpdate,
-                                    correlationId: String)
+                                    correlationId: String,
+                                    correlationIdStored: Boolean)
                                    (implicit hc: HeaderCarrier): Future[SubmissionUpdate] =
     logger.info(s"[SubmissionService] ACK branch returnId=${ctx.returnId} corrId=$correlationId pollInterval=${resp.pollIntervalSeconds.getOrElse(0)} responseEndPoint=${resp.responseEndPoint.getOrElse("-")}")
     for
       acc1 <- persistStatus(ctx, seed, UniversalStatus.ACCEPTED, correlationId)
-      _    <- setGovTalkProtocol(ctx, "dataPoll", correlationId)
-      acc2 <- persistUpdate(ctx, acc1.copy(acceptedDate = Some(nowIso)), correlationId)
-      _    <- updateGovTalkStatistics(ctx, resp.responseEndPoint, resp.pollIntervalSeconds, correlationId)
+      _    <- if correlationIdStored then setGovTalkProtocol(ctx.storn, ctx.formResultId, "dataPoll", correlationId)
+              else
+                logger.error(s"[SubmissionService] GovTalk row unpollable reason=correlation-id-write-failed returnId=${ctx.returnId} corrId=$correlationId")
+                Future.unit
+      acc2 <- persistUpdate(ctx.storn, ctx.returnId, acc1.copy(acceptedDate = Some(resp.acceptedTime.getOrElse(nowIso))), correlationId)
+      _    <- updateGovTalkStatistics(ctx.storn, ctx.formResultId, resp.responseEndPoint, resp.pollIntervalSeconds, correlationId)
       _    =  logger.info(s"[SubmissionService] ACK branch complete returnId=${ctx.returnId} corrId=$correlationId")
     yield acc2
 
@@ -456,50 +528,53 @@ class SubmissionService @Inject() (
       if deptError then
         logger.info(s"[SubmissionService] departmental error — driving GovTalk delete/endState returnId=${ctx.returnId} corrId=$correlationId")
         for
-          _ <- updateGovTalkStatistics(ctx, responseEndPoint, None, correlationId)
-          _ <- setGovTalkProtocol(ctx, "deleteRequest", correlationId)
-          _ <- sendChrisDelete(ctx, responseEndPoint, correlationId)
-          _ <- setGovTalkProtocol(ctx, "endState", correlationId)
+          _ <- updateGovTalkStatistics(ctx.storn, ctx.formResultId, responseEndPoint, None, correlationId)
+          _ <- setGovTalkProtocol(ctx.storn, ctx.formResultId, "deleteRequest", correlationId)
+          _ <- sendChrisDelete(ctx.storn, ctx.returnId, responseEndPoint, correlationId)
+          _ <- setGovTalkProtocol(ctx.storn, ctx.formResultId, "endState", correlationId)
         yield ()
       else Future.unit
 
     for
       acc1 <- persistStatus(ctx, seed, universal, correlationId)
       _    <- govTalkForDept
-      acc2 <- persistUpdate(ctx, acc1.copy(
+      acc2 <- persistUpdate(ctx.storn, ctx.returnId, acc1.copy(
         govTalkErrorCode    = first.flatMap(_.number),
-        govTalkErrorType    = first.map(_.errorType),
+        govTalkErrorType    = first.map(_.classification),
         govTalkErrorMessage = first.flatMap(_.text)
       ), correlationId)
-      _    <- createSubmissionErrorDetails(ctx, errors, correlationId)
-      acc3 <- recoverableTail(ctx, acc2, errors, correlationId)
+      _    <- createSubmissionErrorDetails(ctx.storn, ctx.returnId, errors, correlationId)
+      acc3 <- recoverableTail(ctx.storn, ctx.returnId, acc2, errors, correlationId).map(_.getOrElse(acc2))
       _    <- audit.auditSubmission(ctx.storn, ctx.returnId, correlationId, fullReturn,
         ChrisResponse.Errored(errors, Some(correlationId), responseEndPoint, "<error/>")) // CIP failure
       _    =  logger.info(s"[SubmissionService] ERROR branch complete returnId=${ctx.returnId} corrId=$correlationId recoverable=${isRecoverable(errors)}")
     yield acc3
 
-  private def recoverableTail(ctx: SubmissionContext, acc: SubmissionUpdate, errors: Seq[GovTalkError], correlationId: String)
-                             (implicit hc: HeaderCarrier): Future[SubmissionUpdate] =
+  private def recoverableTail(storn: String, returnId: String, acc: SubmissionUpdate, errors: Seq[GovTalkError], correlationId: String)
+                                (implicit hc: HeaderCarrier): Future[Option[SubmissionUpdate]] =
     if isRecoverable(errors) then
-      logger.info(s"[SubmissionService] error IS recoverable — overwriting status to STARTED and clearing request datetime returnId=${ctx.returnId} corrId=$correlationId")
-      persistUpdate(ctx, acc.copy(
+      logger.info(s"[SubmissionService] error IS recoverable — overwriting status to STARTED and clearing request datetime returnId=$returnId corrId=$correlationId")
+      persistUpdate(storn, returnId, acc.copy(
         submittableStatus     = Some(UniversalStatus.STARTED.toString),
         submissionRequestDate = None
-      ), correlationId)
+      ), correlationId).map(Some(_))
     else
-      logger.info(s"[SubmissionService] error NOT recoverable returnId=${ctx.returnId} corrId=$correlationId")
-      Future.successful(acc)
+      logger.info(s"[SubmissionService] error NOT recoverable returnId=$returnId corrId=$correlationId")
+      Future.successful(None)
 
   private def persistStatus(ctx: SubmissionContext, acc: SubmissionUpdate, status: UniversalStatus, correlationId: String)
                            (implicit hc: HeaderCarrier): Future[SubmissionUpdate] =
-    persistUpdate(ctx, acc.copy(submittableStatus = Some(status.toString)), correlationId)
+    persistUpdate(ctx.storn, ctx.returnId, acc.copy(submittableStatus = Some(status.toString)), correlationId)
 
-  private def persistUpdate(ctx: SubmissionContext, acc: SubmissionUpdate, correlationId: String)
+  private def persistUpdate(storn: String, returnId: String, acc: SubmissionUpdate, correlationId: String)
                            (implicit hc: HeaderCarrier): Future[SubmissionUpdate] =
-    chrisService.updateSubmission(UpdateSubmissionRequest(ctx.storn, ctx.returnId, acc)).map { _ =>
-      logger.info(s"[SubmissionService] submission updated status=${acc.submittableStatus.getOrElse("-")} utrn=${acc.utrn.getOrElse("-")} returnId=${ctx.returnId} corrId=$correlationId")
+    chrisService.updateSubmission(UpdateSubmissionRequest(storn, returnId, acc)).map { _ =>
+      logger.info(s"[SubmissionService] submission updated status=${acc.submittableStatus.getOrElse("-")} utrn=${acc.utrn.getOrElse("-")} returnId=$returnId corrId=$correlationId")
       acc
     }
+
+  private def hasSubmissionRequestDate(fullReturn: FullReturn): Boolean =
+    fullReturn.submission.flatMap(_.submissionRequestDate).exists(_.trim.nonEmpty)
 
   private def ensureSubmissionRequestDatetime(ctx: SubmissionContext, base: SubmissionUpdate, correlationId: String)
                                              (implicit hc: HeaderCarrier): Future[Unit] =
@@ -512,104 +587,106 @@ class SubmissionService @Inject() (
       ()
     }
 
-  private def createSubmissionErrorDetails(ctx: SubmissionContext, errors: Seq[GovTalkError], correlationId: String)
+  private def createSubmissionErrorDetails(storn: String, returnId: String, errors: Seq[GovTalkError], correlationId: String)
                                           (implicit hc: HeaderCarrier): Future[Unit] =
     if errors.isEmpty then
-      logger.info(s"[SubmissionService] no GovTalk errors to persist returnId=${ctx.returnId} corrId=$correlationId")
+      logger.info(s"[SubmissionService] no GovTalk errors to persist returnId=$returnId corrId=$correlationId")
       Future.unit
     else
-      logger.info(s"[SubmissionService] persisting ${errors.size} GovTalk error detail(s) returnId=${ctx.returnId} corrId=$correlationId")
-      errors.foldLeft(Future.unit) { (acc, err) =>
+      logger.info(s"[SubmissionService] persisting ${errors.size} GovTalk error detail(s) returnId=$returnId corrId=$correlationId")
+      errors.zipWithIndex.foldLeft(Future.unit) { case (acc, (err, index)) =>
         acc.flatMap { _ =>
           val req = CreateSubmissionErrorDetailRequest(
-            storn                  = ctx.storn,
-            returnResourceRef      = ctx.returnId,
+            storn                  = storn,
+            returnResourceRef      = returnId,
             submissionErrorDetails = SubmissionErrorDetail(
-              position     = err.location.getOrElse(""),
-              errorMessage = err.text.getOrElse("")
+              position     = index.toString,
+              errorMessage = err.number.fold(err.text.getOrElse(""))(code => s"$code: ${err.text.getOrElse("")}")
             )
           )
           chrisService.createSubmissionErrorDetail(req).map { _ =>
-            logger.info(s"[SubmissionService] error detail persisted number=${err.number.getOrElse("-")} location=${err.location.getOrElse("-")} returnId=${ctx.returnId} corrId=$correlationId")
+            logger.info(s"[SubmissionService] error detail persisted number=${err.number.getOrElse("-")} location=${err.location.getOrElse("-")} returnId=$returnId corrId=$correlationId")
             ()
           }
         }
       }
 
-  private def setGovTalkProtocol(ctx: SubmissionContext, protocolStatus: String, correlationId: String)
+  private def setGovTalkProtocol(storn: String, formResultId: String, protocolStatus: String, correlationId: String)
                                 (implicit hc: HeaderCarrier): Future[Unit] =
     val req = UpdateGovTalkStatusRequest(
-      userIdentifier    = ctx.storn,
-      formResultId      = ctx.formResultId,
+      userIdentifier    = storn,
+      formResultId      = formResultId,
       endStateTimestamp = nowSqlTimestamp,
       protocolStatus    = protocolStatus
     )
     chrisService.updateGovTalkStatus(req).map { _ =>
-      logger.info(s"[SubmissionService] GovTalk protocolStatus set to '$protocolStatus' formResultId=${ctx.formResultId} corrId=$correlationId")
+      logger.info(s"[SubmissionService] GovTalk protocolStatus set to '$protocolStatus' formResultId=$formResultId corrId=$correlationId")
       ()
     }
 
-  private def updateGovTalkStatistics(ctx: SubmissionContext,
+  private def warnOnCorrelationIdMismatch(storn: String, returnId: String, sent: String, received: Option[String]): Unit =
+    received.map(_.trim).filter(id => id.nonEmpty && id != sent).foreach { answered =>
+      logger.warn(s"[$logPrefix] correlation id mismatch answered=$answered ${logRef(storn, returnId, sent)}")
+    }
+
+  private def updateGovTalkStatistics(storn: String,
+                                      formResultId: String,
                                       responseEndPoint: Option[String],
                                       pollIntervalSeconds: Option[Int],
-                                      correlationId: String)
+                                      correlationId: String,
+                                      numberOfPolls: Int = 0)
                                      (implicit hc: HeaderCarrier): Future[Unit] =
-    val gatewayUrl = responseEndPoint.filter(_.nonEmpty).getOrElse(appConfig.baseUrl("chris"))
+    val gatewayUrl = responseEndPoint.filter(_.nonEmpty).getOrElse(connector.defaultPath)
     val req = UpdateGovTalkStatisticsRequest(
-      userIdentifier = ctx.storn,
-      formResultId   = ctx.formResultId,
+      userIdentifier = storn,
+      formResultId   = formResultId,
       govTalkStatus  = GovTalkStatusStatistics(
         lastMessageTimestamp = nowSqlTimestamp,
-        numberOfPolls        = "0",
+        numberOfPolls        = numberOfPolls.toString,
         pollInterval         = pollIntervalSeconds.map(_.toString).getOrElse("0"),
         gatewayUrl           = gatewayUrl
       )
     )
     chrisService.updateGovTalkStatistics(req).map { _ =>
-      logger.info(s"[SubmissionService] GovTalk statistics updated gatewayUrl=$gatewayUrl pollInterval=${pollIntervalSeconds.map(_.toString).getOrElse("0")} formResultId=${ctx.formResultId} corrId=$correlationId")
+      logger.info(s"[SubmissionService] GovTalk statistics updated gatewayUrl=$gatewayUrl pollInterval=${pollIntervalSeconds.map(_.toString).getOrElse("0")} formResultId=$formResultId corrId=$correlationId")
       ()
     }
 
   // Returns true when the ChRIS resource was deleted (or was already gone), false on any error.
-  private def sendChrisDelete(ctx: SubmissionContext, endpoint: Option[String], correlationId: String)
+  private def sendChrisDelete(storn: String, returnId: String, endpoint: Option[String], correlationId: String)
                              (implicit hc: HeaderCarrier): Future[Boolean] =
-    logger.info(s"[SubmissionService] sending ChRIS DELETE returnId=${ctx.returnId} corrId=$correlationId endpoint=${endpoint.getOrElse("<default>")}")
+    logger.info(s"[SubmissionService] sending ChRIS DELETE returnId=$returnId corrId=$correlationId endpoint=${endpoint.getOrElse("<default>")}")
     connector.delete(endpoint, correlationId).map {
       case ChrisDeleteResponse.Deleted(_, _) =>
-        logger.info(s"[SubmissionService] ChRIS resource DELETED returnId=${ctx.returnId} corrId=$correlationId")
+        logger.info(s"[SubmissionService] ChRIS resource DELETED returnId=$returnId corrId=$correlationId")
         true
       case ChrisDeleteResponse.NotFound(_, _) =>
-        logger.info(s"[SubmissionService] ChRIS resource already gone (2000) returnId=${ctx.returnId} corrId=$correlationId")
+        logger.info(s"[SubmissionService] ChRIS resource already gone (2000) returnId=$returnId corrId=$correlationId")
         true
       case ChrisDeleteResponse.Errored(errors, _, _) =>
-        logger.warn(s"[SubmissionService] ChRIS DELETE returned errors (suppressed) returnId=${ctx.returnId} corrId=$correlationId: ${errors.mkString("; ")}")
+        logger.warn(s"[SubmissionService] ChRIS DELETE returned errors (suppressed) returnId=$returnId corrId=$correlationId: ${errors.mkString("; ")}")
         false
       case ChrisDeleteResponse.TransportError(msg, _) =>
-        logger.warn(s"[SubmissionService] ChRIS DELETE transport error (suppressed) returnId=${ctx.returnId} corrId=$correlationId: $msg")
+        logger.warn(s"[SubmissionService] ChRIS DELETE transport error (suppressed) returnId=$returnId corrId=$correlationId: $msg")
         false
     }.recover { case e =>
-      logger.warn(s"[SubmissionService] ChRIS DELETE failed (suppressed) returnId=${ctx.returnId} corrId=$correlationId: ${e.getMessage}")
+      logger.warn(s"[SubmissionService] ChRIS DELETE failed (suppressed) returnId=$returnId corrId=$correlationId: ${e.getMessage}")
       false
     }
 
-  private case class SubmissionContext(
-                                        storn: String,
-                                        returnId: String,
-                                        version: Int,
-                                        credentialIdentifier: String,
-                                        submissionId: Option[String] = None
-                                      ):
-    def formResultId: String =
-      submissionId.map(_.trim).filter(_.nonEmpty)
-        .getOrElse(throw MissingSubmissionIdException(returnId))
+  private case class SubmissionContext(storn: String,
+                                       returnId: String,
+                                       version: Int,
+                                       credentialIdentifier: String,
+                                       submissionId: String = ""):
+    def formResultId: String = submissionId
 
   private def requireContext(fullReturn: FullReturn, credentialIdentifier: String): Either[String, SubmissionContext] =
     (fullReturn.stornId, fullReturn.returnResourceRef, fullReturn.returnInfo.flatMap(_.version)) match
       case _ if credentialIdentifier.trim.isEmpty =>
         Left("Missing credentialIdentifier; cannot submit. Auth context did not provide a credential ID.")
       case (Some(storn), Some(returnId), Some(version)) =>
-        Right(SubmissionContext(storn, returnId, version.toInt, credentialIdentifier,
-          submissionId = fullReturn.submission.flatMap(_.submissionID)))
+        Right(SubmissionContext(storn, returnId, version.toInt, credentialIdentifier))
       case _ =>
         Left(s"FullReturn missing one of stornId / returnResourceRef / returnInfo.version; cannot submit. " +
           s"stornId=${fullReturn.stornId}, returnResourceRef=${fullReturn.returnResourceRef}, " +
@@ -625,3 +702,266 @@ class SubmissionService @Inject() (
 
   private def nowSqlTimestamp: String =
     ZonedDateTime.now(ZoneOffset.UTC).format(SqlTimestampFormatter)
+
+  private val logPrefix: String = "SubmissionService"
+
+  private def logRef(storn: String, returnId: String, correlationId: String): String =
+    s"storn=$storn returnId=$returnId corrId=$correlationId"
+
+  private def buildLockRequest(storn: String, formResultId: String, formLockOld: String, formLockNew: String, pollInterval: String = "0", gatewayUrl: Option[String] = None): UpdateGovTalkStatusLockRequest =
+    UpdateGovTalkStatusLockRequest(
+      userIdentifier = storn,
+      formResultId   = formResultId,
+      govTalkStatus  = GovTalkStatusLock(
+        formLockOld  = formLockOld,
+        formLockNew  = formLockNew,
+        pollInterval = pollInterval,
+        gatewayUrl   = gatewayUrl.filter(_.nonEmpty).getOrElse(connector.defaultPath)
+      )
+    )
+
+  private def pollIntervalOf(row: SelectGovTalkStatusResponse): String =
+    row.pollInterval.flatMap(s => Try(s.trim.toLong).toOption).getOrElse(0L).toString
+
+  private def sendChrisPoll(storn: String, returnId: String, endpoint: Option[String], correlationId: String)
+                           (implicit hc: HeaderCarrier): Future[ChrisResponse] =
+    logger.info(s"[$logPrefix] sending ChRIS POLL ${logRef(storn, returnId, correlationId)} endpoint=${endpoint.getOrElse("<default>")}")
+    connector.poll(endpoint, correlationId)
+
+  private def completeSuccessfulSubmission(storn: String, returnId: String, formResultId: String, correlationId: String, update: SubmissionUpdate, endpoint: Option[String], numberOfPolls: Int = 0)
+                                          (implicit hc: HeaderCarrier): Future[SubmissionUpdate] =
+    for
+      acc     <- persistUpdate(storn, returnId, update, correlationId)
+      _       <- updateGovTalkStatistics(storn, formResultId, endpoint, None, correlationId, numberOfPolls)
+      _       <- setGovTalkProtocol(storn, formResultId, "deleteRequest", correlationId)
+      deleted <- sendChrisDelete(storn, returnId, endpoint, correlationId)
+      _       <- if deleted then finaliseGovTalkStatus(storn, formResultId, correlationId)
+                 else {
+                   logger.warn(s"[SubmissionService] ChRIS delete unsuccessful; leaving GovTalk at deleteRequest (no endState/reset) returnId=$returnId corrId=$correlationId")
+                   Future.unit
+                 }
+    yield acc
+
+  private def closeDepartmentalGovTalk(storn: String, returnId: String, formResultId: String, correlationId: String, endpoint: Option[String], numberOfPolls: Int = 0)
+                                      (implicit hc: HeaderCarrier): Future[Unit] =
+    for
+      _ <- updateGovTalkStatistics(storn, formResultId, endpoint, None, correlationId, numberOfPolls)
+      _ <- setGovTalkProtocol(storn, formResultId, "deleteRequest", correlationId)
+      _ <- sendChrisDelete(storn, returnId, endpoint, correlationId)
+      _ <- setGovTalkProtocol(storn, formResultId, "endState", correlationId)
+    yield ()
+
+  private val pollLogPrefix: String = "PollSubmissionsJob"
+
+  private def pollLogRef(sub: SubmissionForPolling): String =
+    s"storn=${sub.storn} ref=${sub.returnResourceRef}"
+
+  def poll(sub: SubmissionForPolling)(implicit hc: HeaderCarrier): Future[PollOutcome] =
+    chrisService
+      .selectGovTalkStatus(SelectGovTalkStatusRequest(sub.storn, sub.submissionId))
+      .flatMap { row =>
+        resolveCorrelationId(sub, row) match
+          case None                => Future.successful(notPolled(sub))
+          case Some(correlationId) => pollWithLock(sub, row, correlationId)
+      }
+      .recover { case e =>
+        logger.warn(s"[$pollLogPrefix] failed to poll submission ${sub.returnResourceRef}: ${e.getMessage}")
+        notPolled(sub)
+      }
+
+  private def resolveCorrelationId(sub: SubmissionForPolling, row: SelectGovTalkStatusResponse): Option[String] =
+    row.correlationId.map(_.trim).filter(c => c.nonEmpty && !c.equalsIgnoreCase("empty")) match
+      case None =>
+        logger.warn(s"[$pollLogPrefix] no correlation id on GovTalk status, skipping ${pollLogRef(sub)}")
+        None
+      case Some(_) if !(row.protocolStatus.map(_.trim).contains("dataPoll") && intervalElapsed(row)) =>
+        logger.info(s"[$pollLogPrefix] poll not allowed yet ${pollLogRef(sub)} protocolStatus=${row.protocolStatus.getOrElse("-")} lastMessage=${row.lastMessageTimestamp.getOrElse("-")} pollInterval=${row.pollInterval.getOrElse("-")}")
+        None
+      case some => some
+
+  private def intervalElapsed(row: SelectGovTalkStatusResponse): Boolean =
+    val interval = pollIntervalOf(row).toLong
+    row.lastMessageTimestamp.map(_.trim).filter(_.nonEmpty).flatMap(parseTimestamp) match
+      case Some(lastMessage) =>
+        !LocalDateTime.now(clock.withZone(ZoneOffset.UTC)).isBefore(lastMessage.plusSeconds(interval))
+      case None              => true
+
+  private val TimestampFormatter: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+
+  private def parseTimestamp(value: String): Option[LocalDateTime] =
+    Try(LocalDateTime.parse(value.replace('T', ' '), TimestampFormatter)).toOption match
+      case None =>
+        logger.warn(s"[$pollLogPrefix] bad lastMessage timestamp '$value', treating interval as elapsed")
+        None
+      case parsed => parsed
+
+  private def pollWithLock(sub: SubmissionForPolling, row: SelectGovTalkStatusResponse, correlationId: String)
+    (implicit hc: HeaderCarrier): Future[PollOutcome] =
+    acquirePollGovTalkLock(sub, row).flatMap {
+      case false => Future.successful(notPolled(sub))
+      case true  =>
+        pollLocked(sub, row, correlationId).transformWith { result =>
+          releaseGovTalkLock(sub.storn, sub.submissionId, sub.returnResourceRef, correlationId, Some(row))
+            .transformWith(_ => Future.fromTry(result))
+        }
+    }
+
+  private def acquirePollGovTalkLock(sub: SubmissionForPolling, row: SelectGovTalkStatusResponse)
+                                     (implicit hc: HeaderCarrier): Future[Boolean] =
+    chrisService
+      .updateGovTalkStatusLock(buildLockRequest(
+        sub.storn, sub.submissionId, formLockOld = "N", formLockNew = "Y", pollIntervalOf(row), row.gatewayUrl
+      ))
+      .map(_ => true)
+      .recover { case e =>
+        logger.warn(s"[$pollLogPrefix] could not acquire the GovTalk row lock, skipping ${pollLogRef(sub)}: ${e.getMessage}")
+        false
+      }
+
+  private case class PollContext(
+    sub: SubmissionForPolling,
+    correlationId: String,
+    fullReturn: FullReturn,
+    polls: Int,
+    rowPollInterval: String,
+    gatewayUrl: Option[String]
+  ) {
+    val storn: String        = sub.storn
+    val returnId: String     = sub.returnResourceRef
+    val formResultId: String = sub.submissionId
+  }
+
+  private def pollLocked(sub: SubmissionForPolling, row: SelectGovTalkStatusResponse, correlationId: String)
+    (implicit hc: HeaderCarrier): Future[PollOutcome] =
+    for
+      fullReturn <- filingConnector.getFullReturn(GetReturnByRefRequest(sub.returnResourceRef, sub.storn))
+      ctx         = PollContext(
+                      sub             = sub,
+                      correlationId   = correlationId,
+                      fullReturn      = fullReturn,
+                      polls           = row.numberOfPolls.flatMap(n => Try(n.trim.toInt).toOption).getOrElse(0) + 1,
+                      rowPollInterval = pollIntervalOf(row),
+                      gatewayUrl      = row.gatewayUrl
+                    )
+      _          <- updateGovTalkStatistics(ctx.storn, ctx.formResultId, ctx.gatewayUrl,
+                      Try(ctx.rowPollInterval.toInt).toOption, ctx.correlationId, ctx.polls)
+      resp       <- sendChrisPoll(ctx.storn, ctx.returnId, ctx.gatewayUrl, ctx.correlationId)
+      outcome    <- handlePollResponse(ctx, resp)
+    yield outcome
+
+  private def handlePollResponse(ctx: PollContext, resp: ChrisResponse)(implicit hc: HeaderCarrier): Future[PollOutcome] =
+    resp match
+      case t: ChrisResponse.TransportError =>
+        logger.warn(s"[$pollLogPrefix] no response from ChRIS, retry next cycle cause=${t.message} ${pollLogRef(ctx.sub)}")
+        Future.successful(notPolled(ctx.sub))
+
+      case a: ChrisResponse.Acknowledged =>
+        pollAcknowledgementBranch(ctx, a)
+
+      case c: ChrisResponse.Completed =>
+        pollSuccessBranch(ctx, c, universalStatus(ctx, c))
+
+      case e: ChrisResponse.Errored =>
+        pollErrorBranch(ctx, e, universalStatus(ctx, e))
+
+  private def universalStatus(ctx: PollContext, resp: ChrisResponse): UniversalStatus =
+    UniversalStatus.fromChrisResponse(resp, ctx.fullReturn.submission.flatMap(_.irmarkSent))
+
+  private def pollAcknowledgementBranch(ctx: PollContext, resp: ChrisResponse.Acknowledged)
+                                        (implicit hc: HeaderCarrier): Future[PollOutcome] =
+    val nextInterval = resp.pollIntervalSeconds.map(_.toString).getOrElse(ctx.rowPollInterval)
+    val nextEndpoint = resp.responseEndPoint.orElse(ctx.gatewayUrl)
+
+    for
+      _ <- persistUpdate(ctx.storn, ctx.returnId,
+             baseUpdate(ctx.fullReturn).copy(submittableStatus = Some(UniversalStatus.ACCEPTED.toString)),
+             ctx.correlationId)
+      _ <- setGovTalkProtocol(ctx.storn, ctx.formResultId, "dataPoll", ctx.correlationId)
+      _  = warnOnCorrelationIdMismatch(ctx.storn, ctx.returnId, ctx.correlationId, resp.correlationId)
+      _ <- updateGovTalkStatistics(ctx.storn, ctx.formResultId, nextEndpoint,
+             Try(nextInterval.toInt).toOption, ctx.correlationId, ctx.polls)
+    yield polled(ctx, UniversalStatus.ACCEPTED.toString, UniversalStatus.ACCEPTED.toString)
+
+  private def pollSuccessBranch(ctx: PollContext, resp: ChrisResponse.Completed, universal: UniversalStatus)
+    (implicit hc: HeaderCarrier): Future[PollOutcome] =
+    val endpoint = resp.responseEndPoint.orElse(ctx.gatewayUrl)
+
+    logger.info(s"[$pollLogPrefix] poll SUCCESS ${pollLogRef(ctx.sub)} universalStatus=$universal utrn=${resp.utrn.getOrElse("-")}")
+    for
+      _       <- completeSuccessfulSubmission(
+                   ctx.storn,
+                   ctx.returnId,
+                   ctx.formResultId,
+                   ctx.correlationId,
+                   baseUpdate(ctx.fullReturn).copy(
+                     submittableStatus = Some(universal.toString),
+                     IRMarkRecieved    = resp.receivedIrMark,
+                     utrn              = resp.utrn,
+                     acceptedDate      = Some(resp.acceptedTime.getOrElse(nowIso))
+                   ),
+                   endpoint,
+                   ctx.polls
+                 )
+      _        = if resp.utrn.isEmpty then
+                   logger.warn(s"[$pollLogPrefix] UC 1.44 AF11: The UTRN is not present in the Submission Response ${pollLogRef(ctx.sub)}")
+      _       <- emailService.submitEmailConfirmation(ctx.fullReturn, resp.utrn.getOrElse(""), None).recover { case e =>
+                   logger.warn(s"[$pollLogPrefix] confirmation email failed ${pollLogRef(ctx.sub)}: ${e.getMessage}")
+                 }
+      _       <- audit.auditSubmission(ctx.storn, ctx.returnId, ctx.correlationId, ctx.fullReturn, resp)
+    yield polled(ctx, universal.toString, universal.toString)
+
+  private def pollErrorBranch(ctx: PollContext, resp: ChrisResponse.Errored, universal: UniversalStatus)
+    (implicit hc: HeaderCarrier): Future[PollOutcome] =
+    val deptError   = universal == UniversalStatus.DEPARTMENTAL_ERROR
+    val errorStatus = if deptError then UniversalStatus.DEPARTMENTAL_ERROR else UniversalStatus.FATAL_ERROR
+    val endpoint    = resp.responseEndPoint.orElse(ctx.gatewayUrl)
+    val firstError  = resp.errors.headOption
+
+    logger.warn(s"[$pollLogPrefix] poll ERROR ${pollLogRef(ctx.sub)} universalStatus=$errorStatus departmental=$deptError numbers=${resp.errors.flatMap(_.number).mkString(",")}")
+    if deptError then
+      logger.warn(s"[$pollLogPrefix] The return is not validated by the HMRC Backend due to Business Validation Rules (BVR) Errors ${pollLogRef(ctx.sub)}")
+    else
+      logger.warn(s"[$pollLogPrefix] The submission failed due to fatal errors from the Government Gateway ${pollLogRef(ctx.sub)}")
+
+    for
+      acc1        <- persistUpdate(ctx.storn, ctx.returnId,
+                       baseUpdate(ctx.fullReturn).copy(submittableStatus = Some(errorStatus.toString)),
+                       ctx.correlationId)
+      _           <- if deptError then closeDepartmentalGovTalk(ctx.storn, ctx.returnId,
+                       ctx.formResultId, ctx.correlationId, endpoint, ctx.polls)
+                     else Future.unit
+      acc2        <- persistUpdate(ctx.storn, ctx.returnId, acc1.copy(
+                       govTalkErrorCode    = firstError.flatMap(_.number),
+                       govTalkErrorType    = firstError.map(_.classification),
+                       govTalkErrorMessage = firstError.flatMap(_.text)
+                     ), ctx.correlationId)
+      finalStatus <- recoverableTail(ctx.storn, ctx.returnId, acc2, resp.errors, ctx.correlationId)
+                       .map(_.fold(errorStatus.toString)(_ => UniversalStatus.STARTED.toString))
+      _           <- createSubmissionErrorDetails(ctx.storn, ctx.returnId, resp.errors, ctx.correlationId)
+      _           <- audit.auditSubmission(ctx.storn, ctx.returnId, ctx.correlationId, ctx.fullReturn, resp)
+    yield polled(ctx, errorStatus.toString, finalStatus)
+
+  private def baseUpdate(fullReturn: FullReturn): SubmissionUpdate = {
+    val existing = fullReturn.submission
+    SubmissionUpdate(
+      IRMarkRecieved        = existing.flatMap(_.irmarkReceived),
+      utrn                  = existing.flatMap(_.UTRN),
+      email                 = existing.flatMap(_.email),
+      submissionRequestDate = existing.flatMap(_.submissionRequestDate),
+      acceptedDate          = existing.flatMap(_.acceptedDate),
+      submittableStatus     = existing.flatMap(_.submissionStatus),
+      govTalkErrorCode      = existing.flatMap(_.govtalkErrorCode),
+      govTalkErrorType      = existing.flatMap(_.govtalkErrorType),
+      govTalkErrorMessage   = existing.flatMap(_.govtalkErrorMessage),
+      IRMarkSent            = existing.flatMap(_.irmarkSent)
+    )
+  }
+
+  private def notPolled(sub: SubmissionForPolling): PollOutcome =
+    PollOutcome(sub, polled = false, pollResult = "-",
+      newReturnStatus = "-", correlationId = "(not polled)")
+
+  private def polled(ctx: PollContext, pollResult: String, newReturnStatus: String): PollOutcome =
+    PollOutcome(ctx.sub, polled = true, pollResult = pollResult,
+      newReturnStatus = newReturnStatus, correlationId = ctx.correlationId)

@@ -26,6 +26,9 @@ import uk.gov.hmrc.play.bootstrap.config.ServicesConfig
 
 import scala.concurrent.duration.*
 import scala.concurrent.{ExecutionContext, Future}
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import scala.util.Try
 import scala.util.control.NonFatal
 import scala.util.matching.Regex
 import scala.xml.{Elem, Node, XML}
@@ -40,8 +43,8 @@ class ChrisConnector @Inject() (
 
   private val chrisUrl: String   = appConfig.baseUrl("chris")
   private val submitPath: String = chrisUrl + appConfig.getConfString("chris.submit-url", "/ChRIS/SDLT/Filing/sync/SDLT")
-  private val defaultPath: String = submitPath
-  private val deleteClass: String ="IR-SDLT-LTR"
+  val defaultPath: String = submitPath
+  private val messageClass: String ="IR-SDLT-LTR"
   private val requestTimeout: Duration = 120.seconds
   private val UtrnPattern: Regex = "^[0-9]{9}M[A-HJ-NP-TV-Z]$".r
   private val XmlDecl: String = """<?xml version="1.0" encoding="UTF-8"?>"""
@@ -99,6 +102,60 @@ class ChrisConnector @Inject() (
           )
       }
 
+  def poll(endpoint: Option[String], correlationId: String)(implicit hc: HeaderCarrier): Future[ChrisResponse] =
+    val target    = endpoint.filter(_.nonEmpty).getOrElse(defaultPath)
+    val xmlString = XmlDecl + "\n" + pollEnvelope(correlationId).toString()
+    logger.debug(s"[ChrisConnector] POLL target=$target corrId=$correlationId")
+    httpClient
+      .post(url"$target")
+      .setHeader(
+        "Content-Type" -> "application/xml",
+        "Accept" -> "application/xml",
+        "CorrelationId" -> correlationId
+      )
+      .withBody(xmlString)
+      .transform(_.withRequestTimeout(requestTimeout))
+      .execute[HttpResponse]
+      .map { resp =>
+        if is2xx(resp.status) then parse(resp.body)
+        else if RetryableHttpStatuses.contains(resp.status) then
+          logger.warn(s"[ChrisConnector] POLL non-2xx, retrying next cycle corrId=$correlationId status=${resp.status} body:\n${resp.body}")
+          ChrisResponse.TransportError(s"transient HTTP ${resp.status}")
+        else
+          logger.error(s"[ChrisConnector] POLL NON-2xx corrId=$correlationId status=${resp.status} body:\n${resp.body}")
+          ChrisResponse.TransportError(s"NON-2xx status=${resp.status}")
+      }
+      .recover {
+        case e: java.util.concurrent.TimeoutException =>
+          logger.warn(s"[ChrisConnector] POLL timeout after ${requestTimeout}, retrying next cycle corrId=$correlationId", e)
+          ChrisResponse.TransportError("client timeout", "<timeout/>")
+        case NonFatal(e) if isTimeout(e) =>
+          logger.warn(s"[ChrisConnector] POLL timeout, retrying next cycle corrId=$correlationId", e)
+          ChrisResponse.TransportError("client timeout", "<timeout/>")
+        case NonFatal(e) =>
+          logger.error(s"[ChrisConnector] POLL transport exception corrId=$correlationId", e)
+          ChrisResponse.TransportError(Option(e.getMessage).getOrElse(e.toString))
+      }
+
+  private def pollEnvelope(correlationId: String): Elem =
+    <GovTalkMessage xmlns="http://www.govtalk.gov.uk/CM/envelope">
+      <EnvelopeVersion>2.0</EnvelopeVersion>
+      <Header>
+        <MessageDetails>
+          <Class>{messageClass}</Class>
+          <Qualifier>poll</Qualifier>
+          <Function>submit</Function>
+          <CorrelationID>{correlationId}</CorrelationID>
+          <Transformation>XML</Transformation>
+        </MessageDetails>
+        <SenderDetails/>
+      </Header>
+      <GovTalkDetails>
+        <Keys/>
+      </GovTalkDetails>
+      <Body/>
+    </GovTalkMessage>
+
   def delete(endpoint: Option[String], correlationId: String)(implicit hc: HeaderCarrier): Future[ChrisDeleteResponse] =
     val target    = endpoint.filter(_.nonEmpty).getOrElse(defaultPath)
     val xmlString = XmlDecl + "\n" + deleteEnvelope(correlationId).toString()
@@ -136,7 +193,7 @@ class ChrisConnector @Inject() (
       <EnvelopeVersion>2.0</EnvelopeVersion>
       <Header>
         <MessageDetails>
-          <Class>{deleteClass}</Class>
+          <Class>{messageClass}</Class>
           <Qualifier>request</Qualifier>
           <Function>delete</Function>
           <CorrelationID>{correlationId}</CorrelationID>
@@ -180,7 +237,7 @@ class ChrisConnector @Inject() (
     GovTalkError(
       raisedBy = "Gateway",
       number = Some("2005"),
-      errorType = "fatal",
+      errorType = "timeOut",
       text = Some("The Service has not received an acknowledgement of your submission within the permitted timescale (client timeout)."),
       location = None
     )
@@ -189,7 +246,7 @@ class ChrisConnector @Inject() (
     GovTalkError(
       raisedBy = "Gateway",
       number = Some("2005"),
-      errorType = "fatal",
+      errorType = "timeOut",
       text = Some(s"ChRIS returned a transient HTTP $status; the submission was not acknowledged and can be retried."),
       location = None
     )
@@ -217,7 +274,15 @@ class ChrisConnector @Inject() (
       (qualifier, function) match
         case ("response", "submit") =>
           logger.info("[ChrisConnector][parse] response submit" + body + xml)
-          ChrisResponse.Completed(extractUtrn(xml), extractIrMark(xml), corrId, responseEndPoint(xml), body)
+          val irMark = extractIrMark(xml)
+          val accepted = extractAcceptedTime(xml)
+          if irMark.isEmpty then
+            logger.warn(s"[ChrisConnector] no IRmark in response corrId=${corrId.getOrElse("-")}")
+          else
+            logger.info(s"[ChrisConnector] IRmark source=${irMarkSource(xml)} corrId=${corrId.getOrElse("-")}")
+          if accepted.isEmpty then
+            logger.info(s"[ChrisConnector] no AcceptedTime in response, using current time corrId=${corrId.getOrElse("-")}")
+          ChrisResponse.Completed(extractUtrn(xml), irMark, corrId, responseEndPoint(xml), body, accepted)
 
         case ("error", _) =>
           logger.info("[ChrisConnector][parse] response error" + body + xml)
@@ -225,7 +290,7 @@ class ChrisConnector @Inject() (
 
         case ("acknowledgement", _) =>
           logger.info("[ChrisConnector][parse] response acknowledgement" + body + xml)
-          ChrisResponse.Acknowledged(corrId, pollInterval(xml), responseEndPoint(xml), body)
+          ChrisResponse.Acknowledged(corrId, pollInterval(xml), responseEndPoint(xml), body, extractAcceptedTime(xml))
 
         case other =>
           logger.error(s"[ChrisConnector] Unexpected GovTalk qualifier/function $other" + xml)
@@ -263,8 +328,22 @@ class ChrisConnector @Inject() (
       UtrnPattern.findFirstIn((responseXml \\ "_").map(_.text).mkString(" "))
     }
 
+  private val AcceptedTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
+
+  private def extractAcceptedTime(responseXml: Node): Option[String] =
+    (responseXml \\ "AcceptedTime").map(_.text.trim).find(_.nonEmpty)
+      .flatMap(raw => Try(LocalDateTime.parse(raw, DateTimeFormatter.ISO_LOCAL_DATE_TIME)).toOption)
+      .map(_.format(AcceptedTimeFormatter))
+
+  private def irMarkSource(responseXml: Node): String =
+    if (responseXml \\ "IRmarkReceipt" \\ "DigestValue").exists(_.text.trim.nonEmpty) then "IRmarkReceipt/DigestValue"
+    else if (responseXml \\ "IRmark").exists(_.text.trim.nonEmpty) then "IRmark"
+    else if (responseXml \\ "IRMark").exists(_.text.trim.nonEmpty) then "IRMark"
+    else "none"
+
   private def extractIrMark(responseXml: Node): Option[String] =
-    (responseXml \\ "IRmark").map(_.text.trim).find(_.nonEmpty)
+    (responseXml \\ "IRmarkReceipt" \\ "DigestValue").map(_.text.trim).find(_.nonEmpty)
+      .orElse((responseXml \\ "IRmark").map(_.text.trim).find(_.nonEmpty))
       .orElse((responseXml \\ "IRMark").map(_.text.trim).find(_.nonEmpty))
 
   private def text(xml: Node, parent: String, child: String): String =

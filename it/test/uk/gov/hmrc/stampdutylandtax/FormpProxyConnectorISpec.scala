@@ -20,6 +20,7 @@ import com.github.tomakehurst.wiremock.client.WireMock.*
 import itutil.ApplicationWithWiremock
 import models.agent.*
 import models.manage.{ReturnSummary, SdltReturnRecordRequest, SdltReturnRecordResponse}
+import models.polling.SubmissionsForPollingResponse
 import models.purge.{DeleteReturnRequest, DeleteReturnResponse, GetReturnsForPurgeRequest, ReturnsForPurgeResponse}
 import org.scalatest.concurrent.{IntegrationPatience, ScalaFutures}
 import org.scalatest.matchers.must.Matchers
@@ -571,6 +572,34 @@ class FormpProxyConnectorISpec extends AnyWordSpec
         connectorWithStub.updateAgentDetails(req).futureValue
       }
       ex mustBe a[RuntimeException]
+    }
+  }
+
+  "getSubmissionsForPolling" should {
+
+    val formpUrl = "/formp-proxy/submissions-polling"
+
+    "present the internal-auth token and return the submissions due for polling" in {
+      stubFor(
+        get(urlPathEqualTo(formpUrl))
+          .willReturn(aResponse().withStatus(OK).withBody("""{ "submissions": [] }"""))
+      )
+
+      connectorWithFormP.getSubmissionsForPolling().futureValue mustBe SubmissionsForPollingResponse(Nil)
+
+      verify(getRequestedFor(urlPathEqualTo(formpUrl)).withHeader(AUTHORIZATION, equalTo(internalAuthToken)))
+    }
+
+    "fail with a 401 error when formp-proxy will not accept the token" in {
+      stubFor(
+        get(urlPathEqualTo(formpUrl))
+          .willReturn(aResponse().withStatus(UNAUTHORIZED))
+      )
+
+      val ex = intercept[Exception] {
+        connectorWithFormP.getSubmissionsForPolling().futureValue
+      }
+      ex.getMessage must include ("401")
     }
   }
 

@@ -133,6 +133,33 @@ class ChrisConnectorISpec
        |  </Body>
        |</GovTalkMessage>""".stripMargin
 
+  private def realChrisSuccessBody(utrn: String = "123456789MA", digest: String = "DkzkXJo7oa80QT6r9xfwXdArYFQ="): String =
+    s"""<?xml version="1.0" encoding="UTF-8"?>
+       |<GovTalkMessage xmlns="http://www.govtalk.gov.uk/CM/envelope">
+       |  <EnvelopeVersion>2.0</EnvelopeVersion>
+       |  <Header><MessageDetails>
+       |    <Class>IR-SDLT-LTR</Class>
+       |    <Qualifier>response</Qualifier>
+       |    <Function>submit</Function>
+       |    <CorrelationID>$corrId</CorrelationID>
+       |  </MessageDetails></Header>
+       |  <Body>
+       |    <SuccessResponse xmlns="http://www.inlandrevenue.gov.uk/SuccessResponse">
+       |      <IRmarkReceipt>
+       |        <dsig:Signature xmlns:dsig="http://www.w3.org/2000/09/xmldsig#">
+       |          <dsig:SignedInfo>
+       |            <dsig:Reference>
+       |              <dsig:DigestValue>$digest</dsig:DigestValue>
+       |            </dsig:Reference>
+       |          </dsig:SignedInfo>
+       |        </dsig:Signature>
+       |      </IRmarkReceipt>
+       |      <AcceptedTime>2026-08-18T11:53:41.437</AcceptedTime>
+       |      <UTRN>$utrn</UTRN>
+       |    </SuccessResponse>
+       |  </Body>
+       |</GovTalkMessage>""".stripMargin
+
   private def responseNoDetailsBody(): String =
     s"""<?xml version="1.0"?>
        |<GovTalkMessage xmlns="http://www.govtalk.gov.uk/CM/envelope">
@@ -346,6 +373,13 @@ class ChrisConnectorISpec
         case other => fail(s"expected a retryable Errored, got $other")
     }
 
+    "treat a transient 503 as recoverable" in {
+      stubChris(503, "service unavailable")
+
+      val resp = connector.submit(envelope, None, corrId).futureValue
+      UniversalStatus.fromChrisResponse(resp, Some("IRMARK")) shouldBe UniversalStatus.STARTED
+    }
+
     "treat transient statuses 408, 429, 500, 502, 503 and 504 as retryable Errored (2005)" in {
       Seq(408, 429, 500, 502, 503, 504).foreach { s =>
         stubChris(s, s"transient $s")
@@ -399,6 +433,37 @@ class ChrisConnectorISpec
 
       connector.submit(envelope, None, corrId).futureValue match
         case c: ChrisResponse.Completed => c.receivedIrMark shouldBe Some("CAPITAL-IRMARK")
+        case other => fail(s"expected Completed, got $other")
+    }
+
+    "read the IRmark from the IRmarkReceipt digest" in {
+      stubChris(200, realChrisSuccessBody(digest = "DkzkXJo7oa80QT6r9xfwXdArYFQ="))
+
+      connector.submit(envelope, None, corrId).futureValue match
+        case c: ChrisResponse.Completed => c.receivedIrMark shouldBe Some("DkzkXJo7oa80QT6r9xfwXdArYFQ=")
+        case other => fail(s"expected Completed, got $other")
+    }
+
+    "resolve a return to SUBMITTED when the digest in a real ChRIS response matches the mark we sent" in {
+      stubChris(200, realChrisSuccessBody(digest = "SENT-MARK"))
+
+      val resp = connector.submit(envelope, None, corrId).futureValue
+      UniversalStatus.fromChrisResponse(resp, Some("SENT-MARK")) shouldBe UniversalStatus.SUBMITTED
+    }
+
+    "reformat the accepted time from a real ChRIS response for FormP" in {
+      stubChris(200, realChrisSuccessBody())
+
+      connector.submit(envelope, None, corrId).futureValue match
+        case c: ChrisResponse.Completed => c.acceptedTime shouldBe Some("2026-08-18 11:53:41.437")
+        case other => fail(s"expected Completed, got $other")
+    }
+
+    "leave the accepted time empty when the response does not carry one" in {
+      stubChris(200, responseCapitalIrMarkBody(irMark = "CAPITAL-IRMARK"))
+
+      connector.submit(envelope, None, corrId).futureValue match
+        case c: ChrisResponse.Completed => c.acceptedTime shouldBe None
         case other => fail(s"expected Completed, got $other")
     }
 

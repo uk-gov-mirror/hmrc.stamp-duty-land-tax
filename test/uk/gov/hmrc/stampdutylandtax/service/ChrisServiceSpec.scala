@@ -161,8 +161,8 @@ class ChrisServiceSpec extends SpecBase {
       userIdentifier = userIdentifier,
       formResultId = formResultId,
       correlationId = "CORR-1",
-      endStateTimestamp = "2026-01-02T09:05:00Z",
-      protocolStatus = "ACKNOWLEDGED"
+      pollInterval = 0,
+      gatewayUrl = "http://localhost:6995/chris"
     )
 
   private def mkUpdateGovTalkStatusLockRequest(

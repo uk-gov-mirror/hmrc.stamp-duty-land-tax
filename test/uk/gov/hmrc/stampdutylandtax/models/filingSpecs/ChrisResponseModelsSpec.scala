@@ -378,10 +378,36 @@ class ChrisResponseModelsSpec extends AnyWordSpec with Matchers {
       UniversalStatus.fromChrisResponse(resp, None) mustBe UniversalStatus.DEPARTMENTAL_ERROR
     }
 
-    "require raisedBy=Department, number=3001 and type=business together for DEPARTMENTAL_ERROR" in {
-      // 3001 but raised by Gateway -> not departmental-business -> falls through to reset/fatal.
-      val notDept = govTalkError(raisedBy = "Gateway", number = Some("3001"), errorType = "business")
-      UniversalStatus.fromChrisResponse(ChrisResponse.Errored(Seq(notDept), None, Some("url"), "<x/>"), None) mustBe UniversalStatus.FATAL_ERROR
+    "treat any one of raisedBy=Department, type=business or number 3001 as DEPARTMENTAL_ERROR" in {
+      val byRaisedBy = govTalkError(raisedBy = "Department", number = Some("9999"), errorType = "fatal")
+      val byType     = govTalkError(raisedBy = "Gateway", number = Some("9999"), errorType = "business")
+      val byNumber   = govTalkError(raisedBy = "Gateway", number = Some("3001"), errorType = "fatal")
+
+      Seq(byRaisedBy, byType, byNumber).foreach { e =>
+        UniversalStatus.fromChrisResponse(ChrisResponse.Errored(Seq(e), None, Some("url"), "<x/>"), None) mustBe UniversalStatus.DEPARTMENTAL_ERROR
+      }
+    }
+
+    "not treat a plain gateway fatal error as DEPARTMENTAL_ERROR" in {
+      val gateway = govTalkError(raisedBy = "Gateway", number = Some("9999"), errorType = "fatal")
+      UniversalStatus.fromChrisResponse(ChrisResponse.Errored(Seq(gateway), None, Some("url"), "<x/>"), None) mustBe UniversalStatus.FATAL_ERROR
+    }
+
+    "classify a recoverable error ahead of a departmental one, matching the AS-IS ladder" in {
+      val recoverable = govTalkError(raisedBy = "Department", number = Some("1100"), errorType = "business")
+      recoverable.classification mustBe "recoverableError"
+      UniversalStatus.fromChrisResponse(ChrisResponse.Errored(Seq(recoverable), None, Some("url"), "<x/>"), None) mustBe UniversalStatus.FATAL_ERROR
+    }
+
+    "classify GovTalk errors into the four labelled types, falling back to systemError" in {
+      govTalkError(raisedBy = "Gateway", number = Some("1100"), errorType = "fatal").classification mustBe "recoverableError"
+      govTalkError(raisedBy = "Gateway", number = None, errorType = "recoverable").classification mustBe "recoverableError"
+      govTalkError(raisedBy = "Department", number = Some("9999"), errorType = "fatal").classification mustBe "departmentalError"
+      govTalkError(raisedBy = "Gateway", number = Some("3001"), errorType = "fatal").classification mustBe "departmentalError"
+      govTalkError(raisedBy = "Gateway", number = None, errorType = "warning").classification mustBe "warning"
+      govTalkError(raisedBy = "Gateway", number = Some("1002"), errorType = "fatal").classification mustBe "gatewayUserError"
+      govTalkError(raisedBy = "Gateway", number = Some("1046"), errorType = "fatal").classification mustBe "gatewayUserError"
+      govTalkError(raisedBy = "Gateway", number = Some("9999"), errorType = "fatal").classification mustBe "systemError"
     }
 
     "map a resettable error number (1000, 2005, 3000) to STARTED" in {
@@ -391,8 +417,13 @@ class ChrisResponseModelsSpec extends AnyWordSpec with Matchers {
       }
     }
 
+    "map a ChRIS 2005 to STARTED even though the wire type is fatal" in {
+      val fromChris = ChrisResponse.Errored(Seq(govTalkError(number = Some("2005"), errorType = "fatal", raisedBy = "Gateway")), None, Some("url"), "<x/>")
+      UniversalStatus.fromChrisResponse(fromChris, None) mustBe UniversalStatus.STARTED
+    }
+
     "prefer DEPARTMENTAL_ERROR over STARTED when both a 3001 business and a resettable code are present" in {
-      val reset = govTalkError(number = Some("2005"), errorType = "fatal", raisedBy = "Gateway")
+      val reset = govTalkError(number = Some("2005"), errorType = "timeOut", raisedBy = "Gateway")
       val resp  = ChrisResponse.Errored(Seq(reset, departmentalBusiness), None, Some("url"), "<x/>")
       UniversalStatus.fromChrisResponse(resp, None) mustBe UniversalStatus.DEPARTMENTAL_ERROR
     }

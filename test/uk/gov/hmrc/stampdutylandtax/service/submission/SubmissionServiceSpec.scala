@@ -17,9 +17,10 @@
 package uk.gov.hmrc.stampdutylandtax.service.submission
 
 import base.SpecBase
-import connectors.ChrisConnector
+import connectors.{ChrisConnector, FilingFormpProxyConnector}
 import models.email.EmailServiceRequest
 import models.filing.*
+import models.polling.SubmissionForPolling
 import models.submission.*
 import org.mockito.{ArgumentCaptor, Mockito}
 import org.mockito.ArgumentMatchers.{any, eq as eqTo}
@@ -27,9 +28,8 @@ import org.mockito.Mockito.*
 import service.filing.ChrisService
 import service.submission.*
 import uk.gov.hmrc.http.{HeaderCarrier, UpstreamErrorResponse}
-import uk.gov.hmrc.play.bootstrap.config.ServicesConfig
 
-import java.time.LocalDate
+import java.time.{Clock, Instant, LocalDate, ZoneOffset}
 import scala.concurrent.{ExecutionContext, Future}
 import scala.jdk.CollectionConverters.*
 import scala.xml.Elem
@@ -108,7 +108,7 @@ final class SubmissionServiceSpec extends SpecBase {
     GovTalkError(raisedBy = "Gateway", number = Some("8888"), errorType = "fatal", text = Some("Boom two"), location = None)
 
   private val recoverableError: GovTalkError =
-    GovTalkError(raisedBy = "Gateway", number = Some("2005"), errorType = "fatal", text = Some("Transient"), location = None)
+    GovTalkError(raisedBy = "Gateway", number = Some("2005"), errorType = "timeOut", text = Some("Transient"), location = None)
 
   private val recoverable1000: GovTalkError =
     GovTalkError(raisedBy = "Gateway", number = Some("1000"), errorType = "fatal", text = Some("Transient 1000"), location = None)
@@ -116,18 +116,69 @@ final class SubmissionServiceSpec extends SpecBase {
   private val recoverable3000: GovTalkError =
     GovTalkError(raisedBy = "Gateway", number = Some("3000"), errorType = "fatal", text = Some("Transient 3000"), location = None)
 
+  private val pollSubmissionId = "9600001"
+  private val pollRef          = "9200001"
+  private val pollCorrId       = "CORR123456789012345678901234"
+  private val pollSentIrMark   = "SENTIRMARK=="
+
+  private val pollSubmission: SubmissionForPolling =
+    SubmissionForPolling(submissionId = pollSubmissionId, storn = storn, returnResourceRef = pollRef, submissionStatus = "ACCEPTED")
+
+  private val pollFullReturn: FullReturn =
+    FullReturn(
+      stornId           = Some(storn),
+      returnResourceRef = Some(pollRef),
+      submission        = Some(Submission(
+        submissionID          = Some(pollSubmissionId),
+        storn                 = Some(storn),
+        submissionStatus      = Some("ACCEPTED"),
+        irmarkSent            = Some(pollSentIrMark),
+        submissionRequestDate = Some("2026-07-23 10:00:00.000")
+      ))
+    )
+
+  private def pollRow(protocolStatus: String = "dataPoll",
+                      lastMessage: String = "2026-07-23 11:00:00",
+                      pollInterval: String = "60",
+                      corrId: String = pollCorrId,
+                      formLock: String = "N",
+                      gateway: Option[String] = Some("http://chris.example/poll")): SelectGovTalkStatusResponse =
+    SelectGovTalkStatusResponse(
+      userIdentifier       = Some(storn),
+      formResultId         = Some(pollRef),
+      correlationId        = Some(corrId),
+      formLock             = Some(formLock),
+      createTimestamp      = Some("2026-07-23 10:00:00"),
+      endStateTimestamp    = None,
+      lastMessageTimestamp = Some(lastMessage),
+      numberOfPolls        = Some("2"),
+      pollInterval         = Some(pollInterval),
+      protocolStatus       = Some(protocolStatus),
+      gatewayUrl           = gateway
+    )
+
+  private def pollCompleted(irMark: String): ChrisResponse.Completed =
+    ChrisResponse.Completed(
+      utrn             = Some(utrn),
+      receivedIrMark   = Some(irMark),
+      correlationId    = Some(pollCorrId),
+      responseEndPoint = Some("http://chris.example/poll"),
+      rawXml           = "<response/>"
+    )
+
   private final class Fixtures:
-    val envelopeBuilder: GovTalkEnvelopeBuilder = mock[GovTalkEnvelopeBuilder]
-    val validator: SchemaValidator              = mock[SchemaValidator]
-    val connector: ChrisConnector               = mock[ChrisConnector]
-    val audit: SubmissionAuditService           = mock[SubmissionAuditService]
-    val chrisService: ChrisService              = mock[ChrisService]
-    val appConfig: ServicesConfig               = mock[ServicesConfig]
-    val emailService: EmailService              = mock[EmailService]
+    val envelopeBuilder: GovTalkEnvelopeBuilder     = mock[GovTalkEnvelopeBuilder]
+    val validator: SchemaValidator                  = mock[SchemaValidator]
+    val connector: ChrisConnector                   = mock[ChrisConnector]
+    val audit: SubmissionAuditService               = mock[SubmissionAuditService]
+    val chrisService: ChrisService                  = mock[ChrisService]
+    val emailService: EmailService                  = mock[EmailService]
+    val filingConnector: FilingFormpProxyConnector  = mock[FilingFormpProxyConnector]
+    val clock: Clock                                = Clock.fixed(Instant.parse("2026-07-23T12:00:00Z"), ZoneOffset.UTC)
 
-    val service = new SubmissionService(envelopeBuilder, validator, connector, audit, chrisService, appConfig, emailService)
+    val service = new SubmissionService(envelopeBuilder, validator, connector, audit, chrisService, emailService, filingConnector, clock)
 
-    when(appConfig.baseUrl("chris")).thenReturn("http://chris")
+    when(connector.defaultPath).thenReturn("http://chris/ChRIS/SDLT/Filing/sync/SDLT")
     when(validator.validateSdlt(any[Elem])).thenReturn(Right(()))
     when(envelopeBuilder.submissionRequest(any[Elem], any[String], any[LocalDate], any[SenderType], any[String], any[String]))
       .thenReturn(IrMarkResult(<Envelope/>, sentMark, "SENT-MARK-B32"))
@@ -141,6 +192,8 @@ final class SubmissionServiceSpec extends SpecBase {
     when(chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
       .thenReturn(Future.successful(SelectGovTalkStatusResponse(None, None, None, None, None, None, None, None, None, None, None)))
     when(chrisService.resetGovTalkStatus(any[ResetGovTalkStatusRequest])(any[HeaderCarrier]))
+      .thenReturn(Future.successful(GovTalkStatusReturn(true)))
+    when(chrisService.updateGovTalkStatusCorrelationId(any[UpdateGovTalkStatusCorrelationIdRequest])(any[HeaderCarrier]))
       .thenReturn(Future.successful(GovTalkStatusReturn(true)))
     when(chrisService.insertInitialGovTalkStatus(any[InsertInitialGovTalkStatusRequest])(any[HeaderCarrier]))
       .thenReturn(Future.successful(GovTalkStatusReturn(true)))
@@ -162,9 +215,14 @@ final class SubmissionServiceSpec extends SpecBase {
       .thenReturn(Future.successful(()))
     when(connector.delete(any[Option[String]], any[String])(any[HeaderCarrier]))
       .thenReturn(Future.successful(ChrisDeleteResponse.Deleted(Some("corr"), "<delete-response/>")))
+    when(filingConnector.getFullReturn(any[GetReturnByRefRequest])(any[HeaderCarrier]))
+      .thenReturn(Future.successful(pollFullReturn))
 
     def onResponse(resp: ChrisResponse): Unit =
       when(connector.submit(any[Elem], any[Option[String]], any[String], any[Option[String]])(any[HeaderCarrier])).thenReturn(Future.successful(resp))
+
+    def onPollResponse(resp: ChrisResponse): Unit =
+      when(connector.poll(any[Option[String]], any[String])(any[HeaderCarrier])).thenReturn(Future.successful(resp))
 
     def submissions: Seq[SubmissionUpdate] =
       val captor = ArgumentCaptor.forClass(classOf[UpdateSubmissionRequest])
@@ -205,6 +263,26 @@ final class SubmissionServiceSpec extends SpecBase {
 
     def neverSubmitted(): Unit =
       verify(connector, never()).submit(any[Elem], any[Option[String]], any[String], any[Option[String]])(any[HeaderCarrier])
+
+    def statistics: Seq[GovTalkStatusStatistics] =
+      val captor = ArgumentCaptor.forClass(classOf[UpdateGovTalkStatisticsRequest])
+      verify(chrisService, atLeastOnce()).updateGovTalkStatistics(captor.capture())(any[HeaderCarrier])
+      captor.getAllValues.asScala.toSeq.map(_.govTalkStatus)
+
+    def lockRequests: Seq[GovTalkStatusLock] =
+      val captor = ArgumentCaptor.forClass(classOf[UpdateGovTalkStatusLockRequest])
+      verify(chrisService, atLeastOnce()).updateGovTalkStatusLock(captor.capture())(any[HeaderCarrier])
+      captor.getAllValues.asScala.toSeq.map(_.govTalkStatus)
+
+    def errorDetails: Seq[SubmissionErrorDetail] =
+      val captor = ArgumentCaptor.forClass(classOf[CreateSubmissionErrorDetailRequest])
+      verify(chrisService, atLeastOnce()).createSubmissionErrorDetail(captor.capture())(any[HeaderCarrier])
+      captor.getAllValues.asScala.toSeq.map(_.submissionErrorDetails)
+
+    def pollTargets: Seq[Option[String]] =
+      val captor = ArgumentCaptor.forClass(classOf[Option[String]])
+      verify(connector, atLeastOnce()).poll(captor.capture(), any[String])(any[HeaderCarrier])
+      captor.getAllValues.asScala.toSeq
 
   "SubmissionService.submit requireContext" - {
 
@@ -361,13 +439,14 @@ final class SubmissionServiceSpec extends SpecBase {
       f.resetRequests.head.govTalkStatus.endStateTimestamp mustBe None
     }
 
-    "must reuse the stored gateway URL as the ChRIS submit URL when resetting" in {
+    "must discard the stored gateway URL on reset and submit to the configured ChRIS URL" in {
       val f = new Fixtures
       when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
         .thenReturn(Future.successful(selectRow(protocol = Some("initial"), gatewayUrl = Some("http://stored-gateway"))))
       f.onResponse(acknowledged)
       f.service.submit(aReturn(), sender, periodEnd, cred).futureValue
-      f.submitUrls must contain(Some("http://stored-gateway"))
+      f.submitUrls must contain(None)
+      f.submitUrls must not contain Some("http://stored-gateway")
     }
 
     "must insert an initial row when the lookup fails" in {
@@ -453,7 +532,9 @@ final class SubmissionServiceSpec extends SpecBase {
       val f = new Fixtures
       when(f.chrisService.updateGovTalkStatusLock(any[UpdateGovTalkStatusLockRequest])(any[HeaderCarrier]))
         .thenReturn(Future.failed(new RuntimeException("lock held")))
-      f.service.submit(aReturn(), sender, periodEnd, cred).failed.futureValue mustBe a[GovTalkLockNotAcquiredException]
+      val ex = f.service.submit(aReturn(), sender, periodEnd, cred).failed.futureValue
+      ex mustBe a[GovTalkLockNotAcquiredException]
+      ex.asInstanceOf[GovTalkLockNotAcquiredException].formResultId mustBe submissionId
     }
 
     "must make no ChRIS call when the lock cannot be acquired" in {
@@ -652,11 +733,11 @@ final class SubmissionServiceSpec extends SpecBase {
       f.statuses must contain("DEPARTMENTAL_ERROR")
     }
 
-    "must record the first error's code, type and message" in {
+    "must record the first error's code, classified type and message" in {
       val f = new Fixtures; run(f).futureValue
       val w = f.submissions.find(_.govTalkErrorCode.isDefined).value
       w.govTalkErrorCode    mustBe Some("3001")
-      w.govTalkErrorType    mustBe Some("business")
+      w.govTalkErrorType    mustBe Some("departmentalError")
       w.govTalkErrorMessage mustBe Some("Invalid STORN")
     }
 
@@ -735,6 +816,21 @@ final class SubmissionServiceSpec extends SpecBase {
       verify(f.audit).auditSubmission(any[String], any[String], any[String], any[FullReturn], any[ChrisResponse])(any[HeaderCarrier])
     }
 
+    "must keep the original submission request date when a return is submitted again" in {
+      val f = new Fixtures
+      val existing = aReturn(submission = Some(Submission(
+        submissionID          = Some("SUB-1"),
+        storn                 = Some(storn),
+        submissionStatus      = Some("ACCEPTED"),
+        submissionRequestDate = Some("2026-07-23 10:00:00.000")
+      )))
+      f.onResponse(completed(Some("UTRN123"), None))
+
+      f.service.submit(existing, sender, periodEnd, cred).futureValue
+
+      f.submissions.head.submissionRequestDate mustBe Some("2026-07-23 10:00:00.000")
+    }
+
     "must overwrite the status to STARTED for recoverable error 1000" in {
       val f = new Fixtures
       f.onResponse(errored(recoverable1000))
@@ -746,6 +842,14 @@ final class SubmissionServiceSpec extends SpecBase {
       val f = new Fixtures
       f.onResponse(errored(recoverable3000))
       f.service.submit(aReturn(), sender, periodEnd, cred).futureValue
+      f.statuses must contain("STARTED")
+    }
+
+    "must overwrite the status to STARTED when a departmental rejection also carries a recoverable code" in {
+      val f = new Fixtures
+      f.onResponse(errored(departmentalError, recoverable1000))
+      f.service.submit(aReturn(), sender, periodEnd, cred).futureValue
+      f.statuses must contain("DEPARTMENTAL_ERROR")
       f.statuses must contain("STARTED")
     }
   }
@@ -805,11 +909,147 @@ final class SubmissionServiceSpec extends SpecBase {
       verify(f.chrisService, times(2)).createSubmissionErrorDetail(any[CreateSubmissionErrorDetailRequest])(any[HeaderCarrier])
     }
 
+    "must not attempt to release the GovTalk lock when the row has already been unlocked by the reset" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(selectRow(protocol = Some("dataPoll"))))
+      f.onResponse(completed(Some(utrn), Some(sentMark)))
+      f.service.submit(aReturn(), sender, periodEnd, cred).futureValue
+
+      val captor: ArgumentCaptor[UpdateGovTalkStatusLockRequest] =
+        ArgumentCaptor.forClass(classOf[UpdateGovTalkStatusLockRequest])
+      verify(f.chrisService, atLeastOnce()).updateGovTalkStatusLock(captor.capture())(any[HeaderCarrier])
+      captor.getAllValues.asScala.map(_.govTalkStatus.formLockNew) must not contain "N"
+    }
+
+    "must preserve the poll interval and gateway url stored by the acknowledgement when releasing the lock" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(selectRow(protocol = Some("dataPoll"), gatewayUrl = Some("http://chris.example/poll/abc"))
+          .copy(pollInterval = Some("120"), formLock = Some("Y"))))
+      f.onResponse(completed(Some(utrn), Some(sentMark)))
+      f.service.submit(aReturn(), sender, periodEnd, cred).futureValue
+
+      val captor: ArgumentCaptor[UpdateGovTalkStatusLockRequest] =
+        ArgumentCaptor.forClass(classOf[UpdateGovTalkStatusLockRequest])
+      verify(f.chrisService, atLeastOnce()).updateGovTalkStatusLock(captor.capture())(any[HeaderCarrier])
+      val release = captor.getAllValues.asScala.toList.map(_.govTalkStatus).filter(_.formLockNew == "N")
+
+      release.map(_.pollInterval) must contain("120")
+      release.map(_.gatewayUrl) must contain("http://chris.example/poll/abc")
+    }
+
+    "must store the new correlation id after resetting an existing GovTalk row" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(selectRow(protocol = Some("endState"))))
+      f.onResponse(acknowledged)
+      f.service.submit(aReturn(), sender, periodEnd, cred).futureValue
+
+      val captor: ArgumentCaptor[UpdateGovTalkStatusCorrelationIdRequest] =
+        ArgumentCaptor.forClass(classOf[UpdateGovTalkStatusCorrelationIdRequest])
+      verify(f.chrisService, atLeastOnce()).updateGovTalkStatusCorrelationId(captor.capture())(any[HeaderCarrier])
+      val first = captor.getAllValues.get(0)
+      first.correlationId must not be "empty"
+      first.correlationId.length mustBe 32
+    }
+
+    "must fail the submit without sending to ChRIS when the correlation id cannot be stored after a reset" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(selectRow(protocol = Some("endState"))))
+      when(f.chrisService.updateGovTalkStatusCorrelationId(any[UpdateGovTalkStatusCorrelationIdRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.failed(UpstreamErrorResponse("correlation id write failed", 500)))
+      f.onResponse(acknowledged)
+
+      f.service.submit(aReturn(), sender, periodEnd, cred).failed.futureValue mustBe a[UpstreamErrorResponse]
+      verify(f.connector, never()).submit(any[Elem], any[Option[String]], any[String], any[Option[String]])(any[HeaderCarrier])
+    }
+
+    "must not mark the GovTalk row pollable when the id ChRIS returned cannot be stored" in {
+      val f = new Fixtures
+      when(f.chrisService.updateGovTalkStatusCorrelationId(any[UpdateGovTalkStatusCorrelationIdRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.failed(UpstreamErrorResponse("correlation id write failed", 500)))
+      f.onResponse(acknowledged)
+      f.service.submit(aReturn(), sender, periodEnd, cred).futureValue
+
+      verify(f.chrisService, never()).updateGovTalkStatus(any[UpdateGovTalkStatusRequest])(any[HeaderCarrier])
+    }
+
+    "must mark the GovTalk row pollable when the id ChRIS returned is stored" in {
+      val f = new Fixtures
+      f.onResponse(acknowledged)
+      f.service.submit(aReturn(), sender, periodEnd, cred).futureValue
+
+      val captor: ArgumentCaptor[UpdateGovTalkStatusRequest] =
+        ArgumentCaptor.forClass(classOf[UpdateGovTalkStatusRequest])
+      verify(f.chrisService, atLeastOnce()).updateGovTalkStatus(captor.capture())(any[HeaderCarrier])
+      captor.getAllValues.asScala.map(_.protocolStatus) must contain("dataPoll")
+    }
+
+    "must still complete the submission when the id ChRIS returned cannot be stored" in {
+      val f = new Fixtures
+      when(f.chrisService.updateGovTalkStatusCorrelationId(any[UpdateGovTalkStatusCorrelationIdRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.failed(UpstreamErrorResponse("correlation id write failed", 500)))
+      f.onResponse(acknowledged)
+
+      f.service.submit(aReturn(), sender, periodEnd, cred).futureValue.status mustBe UniversalStatus.ACCEPTED
+    }
+
+    "must overwrite the stored correlation id with the one ChRIS returns" in {
+      val f = new Fixtures
+      f.onResponse(acknowledged)
+      f.service.submit(aReturn(), sender, periodEnd, cred).futureValue
+
+      val captor: ArgumentCaptor[UpdateGovTalkStatusCorrelationIdRequest] =
+        ArgumentCaptor.forClass(classOf[UpdateGovTalkStatusCorrelationIdRequest])
+      verify(f.chrisService, atLeastOnce()).updateGovTalkStatusCorrelationId(captor.capture())(any[HeaderCarrier])
+      captor.getAllValues.asScala.map(_.correlationId).last mustBe "corr"
+    }
+
+    "must keep the id we generated when ChRIS returns no correlation id" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(selectRow(protocol = Some("endState"))))
+      f.onResponse(ChrisResponse.Acknowledged(None, Some(10), Some("url"), "<ack/>"))
+      f.service.submit(aReturn(), sender, periodEnd, cred).futureValue
+
+      val captor: ArgumentCaptor[UpdateGovTalkStatusCorrelationIdRequest] =
+        ArgumentCaptor.forClass(classOf[UpdateGovTalkStatusCorrelationIdRequest])
+      verify(f.chrisService, atLeastOnce()).updateGovTalkStatusCorrelationId(captor.capture())(any[HeaderCarrier])
+      captor.getAllValues.asScala.map(_.correlationId).distinct.size mustBe 1
+      captor.getAllValues.get(0).correlationId.length mustBe 32
+    }
+
+    "must send the ChRIS delete with the correlation id ChRIS returned" in {
+      val f = new Fixtures
+      f.onResponse(completed(Some(utrn), Some(sentMark)))
+      f.service.submit(aReturn(), sender, periodEnd, cred).futureValue
+
+      val captor: ArgumentCaptor[String] = ArgumentCaptor.forClass(classOf[String])
+      verify(f.connector, atLeastOnce()).delete(any[Option[String]], captor.capture())(any[HeaderCarrier])
+      captor.getValue mustBe "corr"
+    }
+
     "must record the fields of the first error only" in {
       val f = new Fixtures
       f.onResponse(errored(fatalError, fatalError2))
       f.service.submit(aReturn(), sender, periodEnd, cred).futureValue
       f.submissions.find(_.govTalkErrorCode.isDefined).value.govTalkErrorCode mustBe Some("9999")
+    }
+
+    "must number each error detail from zero and prefix the message with the error code" in {
+      val f = new Fixtures
+      f.onResponse(errored(fatalError, fatalError2))
+      f.service.submit(aReturn(), sender, periodEnd, cred).futureValue
+
+      val captor: ArgumentCaptor[CreateSubmissionErrorDetailRequest] =
+        ArgumentCaptor.forClass(classOf[CreateSubmissionErrorDetailRequest])
+      verify(f.chrisService, times(2)).createSubmissionErrorDetail(captor.capture())(any[HeaderCarrier])
+      val details = captor.getAllValues.asScala.toList.map(_.submissionErrorDetails)
+
+      details.map(_.position) mustBe List("0", "1")
+      details.map(_.errorMessage) mustBe List("9999: Boom", "8888: Boom two")
     }
   }
 
@@ -942,4 +1182,378 @@ final class SubmissionServiceSpec extends SpecBase {
       f.lockFlags must contain("N")
     }
   }
+
+  "SubmissionService.poll choosing whether to poll" - {
+
+    "skips a submission whose GovTalk status is not at dataPoll" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow(protocolStatus = "initial")))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe false
+      verify(f.connector, never()).poll(any[Option[String]], any[String])(any[HeaderCarrier])
+    }
+
+    "skips a submission whose poll interval has not yet elapsed" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow(lastMessage = "2026-07-23 11:59:30", pollInterval = "3600")))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe false
+      verify(f.connector, never()).poll(any[Option[String]], any[String])(any[HeaderCarrier])
+    }
+
+    "skips a submission with no correlation id on its GovTalk status" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow(corrId = "empty")))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe false
+      verify(f.connector, never()).poll(any[Option[String]], any[String])(any[HeaderCarrier])
+    }
+  }
+
+  "SubmissionService.poll holding the GovTalk row lock" - {
+
+    "skips a submission when the GovTalk row lock cannot be acquired" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      when(f.chrisService.updateGovTalkStatusLock(any[UpdateGovTalkStatusLockRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.failed(new RuntimeException("already locked")))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe false
+      verify(f.connector, never()).poll(any[Option[String]], any[String])(any[HeaderCarrier])
+    }
+
+    "skips a submission when formp rejects the lock because the row is already held" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      when(f.chrisService.updateGovTalkStatusLock(any[UpdateGovTalkStatusLockRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.failed(UpstreamErrorResponse("row already locked", 500)))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe false
+      verify(f.connector, never()).poll(any[Option[String]], any[String])(any[HeaderCarrier])
+      verify(f.chrisService, never()).updateSubmission(any[UpdateSubmissionRequest])(any[HeaderCarrier])
+    }
+
+    "releases the GovTalk row lock with the freshest interval and gateway after an acknowledgement" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(
+          Future.successful(pollRow()),
+          Future.successful(pollRow(formLock = "Y", pollInterval = "120").copy(gatewayUrl = Some("http://chris.example/next")))
+        )
+      f.onPollResponse(ChrisResponse.Acknowledged(Some(pollCorrId), Some(120), Some("http://chris.example/next"), "<ack/>"))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.lockRequests.filter(_.formLockNew == "N").map(_.pollInterval) must contain("120")
+      f.lockRequests.filter(_.formLockNew == "N").map(_.gatewayUrl)   must contain("http://chris.example/next")
+    }
+
+    "releases the GovTalk row lock with the values read before the poll when the status cannot be re-read" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow(pollInterval = "300", gateway = Some("http://chris.example/poll"))))
+        .thenReturn(Future.failed(new RuntimeException("formp unavailable")))
+      f.onPollResponse(pollCompleted(pollSentIrMark))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      val releases = f.lockRequests.filter(_.formLockNew == "N")
+      releases.map(_.pollInterval) must contain only "300"
+      releases.map(_.gatewayUrl)   must contain only "http://chris.example/poll"
+    }
+
+    "does not attempt to release the GovTalk row lock when the reset has already unlocked it" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(
+          Future.successful(pollRow()),
+          Future.successful(pollRow(formLock = "N"))
+        )
+      f.onPollResponse(pollCompleted(pollSentIrMark))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.lockRequests.filter(_.formLockNew == "N") mustBe empty
+    }
+
+    "trims the stored poll interval before sending it to formp-proxy" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow(pollInterval = " 60 ")))
+      f.onPollResponse(ChrisResponse.Acknowledged(Some(pollCorrId), None, None, "<ack/>"))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.lockRequests.map(_.pollInterval) must contain only "60"
+      f.statistics.map(_.pollInterval) must contain only "60"
+    }
+  }
+
+  "SubmissionService.poll deciding where to send the poll" - {
+
+    "polls the stored gateway url when it already carries the ChRIS path" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow(gateway = Some("http://chris/ChRIS/SDLT/Filing/sync/SDLT"))))
+      f.onPollResponse(ChrisResponse.Acknowledged(Some(pollCorrId), Some(60), None, "<ack/>"))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.pollTargets mustBe Seq(Some("http://chris/ChRIS/SDLT/Filing/sync/SDLT"))
+    }
+
+    "keys GovTalk by the submission id and the submission by the return resource ref" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      f.onPollResponse(pollCompleted(pollSentIrMark))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      val statsKeys = ArgumentCaptor.forClass(classOf[UpdateGovTalkStatisticsRequest])
+      verify(f.chrisService, atLeastOnce()).updateGovTalkStatistics(statsKeys.capture())(any[HeaderCarrier])
+      statsKeys.getAllValues.asScala.toSeq.map(_.formResultId).distinct mustBe Seq(pollSubmissionId)
+
+      val submissionKeys = ArgumentCaptor.forClass(classOf[UpdateSubmissionRequest])
+      verify(f.chrisService, atLeastOnce()).updateSubmission(submissionKeys.capture())(any[HeaderCarrier])
+      submissionKeys.getAllValues.asScala.toSeq.map(_.returnResourceRef).distinct mustBe Seq(pollRef)
+    }
+
+    "falls back to the full ChRIS submission url when no gateway url is stored or returned" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow(gateway = None)))
+      f.onPollResponse(ChrisResponse.Acknowledged(Some(pollCorrId), Some(60), None, "<ack/>"))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.statistics.map(_.gatewayUrl) must contain("http://chris/ChRIS/SDLT/Filing/sync/SDLT")
+    }
+  }
+
+  "SubmissionService.poll recording the attempt before it is sent" - {
+
+    "increments the number of polls before the poll is sent" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      f.onPollResponse(pollCompleted(pollSentIrMark))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      val ordered = Mockito.inOrder(f.chrisService, f.connector)
+      ordered.verify(f.chrisService).updateGovTalkStatistics(any[UpdateGovTalkStatisticsRequest])(any[HeaderCarrier])
+      ordered.verify(f.connector).poll(any[Option[String]], any[String])(any[HeaderCarrier])
+      f.statistics.head.numberOfPolls mustBe "3"
+    }
+  }
+
+  "SubmissionService.poll on Acknowledged" - {
+
+    "leaves the submission ACCEPTED and stores the new poll interval and gateway when ChRIS acknowledges again" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      f.onPollResponse(ChrisResponse.Acknowledged(Some(pollCorrId), Some(120), Some("http://chris.example/next"), "<ack/>"))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.statuses must contain("ACCEPTED")
+      f.statistics.map(_.pollInterval) must contain("120")
+      f.statistics.map(_.gatewayUrl) must contain("http://chris.example/next")
+    }
+  }
+
+  "SubmissionService.poll on Completed" - {
+
+    "marks the submission SUBMITTED and completes the delete, reset, audit and email steps when the poll completes with a matching IR mark" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      f.onPollResponse(pollCompleted(pollSentIrMark))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.statuses must contain("SUBMITTED")
+      verify(f.connector).delete(any[Option[String]], any[String])(any[HeaderCarrier])
+      verify(f.chrisService).resetGovTalkStatus(any[ResetGovTalkStatusRequest])(any[HeaderCarrier])
+      verify(f.audit).auditSubmission(any[String], any[String], any[String], any[FullReturn], any[ChrisResponse])(any[HeaderCarrier])
+      verify(f.emailService).submitEmailConfirmation(any[FullReturn], any[String], any[Option[String]])(any[HeaderCarrier])
+    }
+
+    "marks the submission SUBMITTED_NO_RECEIPT when the received IR mark does not match" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      f.onPollResponse(pollCompleted("DIFFERENTMARK=="))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.statuses must contain("SUBMITTED_NO_RECEIPT")
+    }
+
+    "leaves GovTalk at deleteRequest when the ChRIS delete fails after a successful poll" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      f.onPollResponse(pollCompleted(pollSentIrMark))
+      when(f.connector.delete(any[Option[String]], any[String])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(ChrisDeleteResponse.TransportError("client timeout")))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.statuses must contain("SUBMITTED")
+      f.protocols mustBe Seq("deleteRequest")
+      verify(f.chrisService, never()).resetGovTalkStatus(any[ResetGovTalkStatusRequest])(any[HeaderCarrier])
+      verify(f.emailService).submitEmailConfirmation(any[FullReturn], any[String], any[Option[String]])(any[HeaderCarrier])
+    }
+
+    "still sends the confirmation email and persists the UTRN when the CIP audit fails" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      f.onPollResponse(pollCompleted(pollSentIrMark))
+      when(f.audit.auditSubmission(any[String], any[String], any[String], any[FullReturn], any[ChrisResponse])(any[HeaderCarrier]))
+        .thenReturn(Future.failed(new RuntimeException("datastream down")))
+
+      f.service.poll(pollSubmission).futureValue
+
+      f.submissions.flatMap(_.utrn)           must contain(utrn)
+      f.submissions.flatMap(_.IRMarkRecieved) must contain(pollSentIrMark)
+      verify(f.emailService).submitEmailConfirmation(any[FullReturn], any[String], any[Option[String]])(any[HeaderCarrier])
+    }
+
+    "completes the submission and still reports it as polled when ChRIS returns no UTRN" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      f.onPollResponse(ChrisResponse.Completed(None, Some(pollSentIrMark), Some(pollCorrId), None, "<ok/>"))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.statuses must contain("SUBMITTED")
+      f.submissions.flatMap(_.utrn) mustBe empty
+      verify(f.connector).delete(any[Option[String]], any[String])(any[HeaderCarrier])
+    }
+  }
+
+  "SubmissionService.poll on Errored" - {
+
+    "marks the submission DEPARTMENTAL_ERROR and records error details on a departmental error" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      val departmental = GovTalkError(raisedBy = "Department", number = Some("3001"), errorType = "business", text = Some("BVR failure"), location = Some("line 1"))
+      f.onPollResponse(ChrisResponse.Errored(Seq(departmental), Some(pollCorrId), None, "<error/>"))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.statuses must contain("DEPARTMENTAL_ERROR")
+      f.errorDetails.map(_.position)     mustBe Seq("0")
+      f.errorDetails.map(_.errorMessage) mustBe Seq("3001: BVR failure")
+      verify(f.connector).delete(any[Option[String]], any[String])(any[HeaderCarrier])
+    }
+
+    "persists DEPARTMENTAL_ERROR before sending the ChRIS delete" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      val departmental = GovTalkError(raisedBy = "Department", number = Some("3001"), errorType = "business", text = Some("BVR failure"), location = None)
+      f.onPollResponse(ChrisResponse.Errored(Seq(departmental), Some(pollCorrId), None, "<error/>"))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      val ordered = Mockito.inOrder(f.chrisService, f.connector)
+      ordered.verify(f.chrisService).updateSubmission(any[UpdateSubmissionRequest])(any[HeaderCarrier])
+      ordered.verify(f.connector).delete(any[Option[String]], any[String])(any[HeaderCarrier])
+    }
+
+    "marks the submission FATAL_ERROR and sends no delete on a fatal gateway error" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      val fatal = GovTalkError(raisedBy = "Gateway", number = Some("2000"), errorType = "fatal", text = Some("schema failure"), location = None)
+      f.onPollResponse(ChrisResponse.Errored(Seq(fatal), Some(pollCorrId), None, "<error/>"))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.statuses must contain("FATAL_ERROR")
+      verify(f.connector, never()).delete(any[Option[String]], any[String])(any[HeaderCarrier])
+      verify(f.chrisService, never()).updateGovTalkStatus(any[UpdateGovTalkStatusRequest])(any[HeaderCarrier])
+      f.errorDetails.map(_.errorMessage) mustBe Seq("2000: schema failure")
+    }
+
+    "resets the submission to STARTED when the error is recoverable" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      val recoverable = GovTalkError(raisedBy = "Gateway", number = Some("1000"), errorType = "fatal", text = Some("try again"), location = None)
+      f.onPollResponse(ChrisResponse.Errored(Seq(recoverable), Some(pollCorrId), None, "<error/>"))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.statuses.head mustBe "FATAL_ERROR"
+      f.statuses.last mustBe "STARTED"
+      f.submissions.last.submissionRequestDate mustBe None
+    }
+
+    "resets a departmental error to STARTED when the response carries a recoverable code" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      val departmental = GovTalkError(raisedBy = "Department", number = Some("3001"), errorType = "business", text = Some("BVR failure"), location = None)
+      val recoverable  = GovTalkError(raisedBy = "Gateway", number = Some("1000"), errorType = "fatal", text = Some("try again"), location = None)
+      f.onPollResponse(ChrisResponse.Errored(Seq(departmental, recoverable), Some(pollCorrId), None, "<error/>"))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe true
+
+      f.statuses must contain("DEPARTMENTAL_ERROR")
+      f.statuses.last mustBe "STARTED"
+      f.submissions.last.submissionRequestDate mustBe None
+    }
+  }
+
+  "SubmissionService.poll on a TransportError" - {
+
+    "leaves the submission untouched and does not count it as polled when ChRIS gives no response" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      f.onPollResponse(ChrisResponse.TransportError("client timeout"))
+
+      f.service.poll(pollSubmission).futureValue.polled mustBe false
+
+      verify(f.chrisService, never()).updateSubmission(any[UpdateSubmissionRequest])(any[HeaderCarrier])
+      verify(f.audit, never()).auditSubmission(any[String], any[String], any[String], any[FullReturn], any[ChrisResponse])(any[HeaderCarrier])
+    }
+
+    "reports a dash in both result columns when ChRIS gives no response" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow()))
+      f.onPollResponse(ChrisResponse.TransportError("client timeout"))
+
+      val outcome = f.service.poll(pollSubmission).futureValue
+      outcome.pollResult      mustBe "-"
+      outcome.newReturnStatus mustBe "-"
+      outcome.correlationId   mustBe "(not polled)"
+    }
+
+    "reports a dash in both result columns when the submission is skipped before any poll is sent" in {
+      val f = new Fixtures
+      when(f.chrisService.selectGovTalkStatus(any[SelectGovTalkStatusRequest])(any[HeaderCarrier]))
+        .thenReturn(Future.successful(pollRow(protocolStatus = "initial")))
+
+      val outcome = f.service.poll(pollSubmission).futureValue
+      outcome.pollResult      mustBe "-"
+      outcome.newReturnStatus mustBe "-"
+      outcome.correlationId   mustBe "(not polled)"
+    }
+  }
+
 }

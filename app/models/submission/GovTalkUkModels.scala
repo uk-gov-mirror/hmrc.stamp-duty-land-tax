@@ -115,8 +115,8 @@ case class UpdateGovTalkStatusCorrelationIdRequest(
                                                     userIdentifier: String,
                                                     formResultId: String,
                                                     correlationId: String,
-                                                    endStateTimestamp: String,
-                                                    protocolStatus: String
+                                                    pollInterval: Int,
+                                                    gatewayUrl: String
                                                   )
 
 object UpdateGovTalkStatusCorrelationIdRequest {

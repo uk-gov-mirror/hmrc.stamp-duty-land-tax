@@ -60,6 +60,15 @@ final case class GovTalkError(
 
   def isFatal: Boolean = errorType.equalsIgnoreCase("fatal")
 
+  def classification: String =
+    if errorType.equalsIgnoreCase("recoverable") || number.contains("1100") then "recoverableError"
+    else if isBusiness || fromDepartment then "departmentalError"
+    else if errorType.equalsIgnoreCase("warning") then "warning"
+    else if number.contains("1002") || number.contains("1046") then "gatewayUserError"
+    else "systemError"
+
+  def isDepartmental: Boolean = classification == "departmentalError"
+
 object GovTalkError:
   given Format[GovTalkError] = Json.format[GovTalkError]
 
@@ -67,8 +76,8 @@ sealed trait ChrisResponse:
   def rawXml: String
 
   def toStatus: SubmissionStatus = this match
-    case ChrisResponse.Completed(Some(_), _, _, _, _) => SubmissionStatus.Submitted
-    case ChrisResponse.Completed(None, _, _, _, _)    => SubmissionStatus.FatalError
+    case ChrisResponse.Completed(Some(_), _, _, _, _, _) => SubmissionStatus.Submitted
+    case ChrisResponse.Completed(None, _, _, _, _, _)    => SubmissionStatus.FatalError
     case _: ChrisResponse.Acknowledged                => SubmissionStatus.Accepted
     case e: ChrisResponse.Errored                     =>
       if e.isBusinessReject then SubmissionStatus.DepartmentalError else SubmissionStatus.FatalError
@@ -80,7 +89,8 @@ object ChrisResponse:
                               receivedIrMark: Option[String],
                               correlationId: Option[String],
                               responseEndPoint: Option[String],
-                              rawXml: String
+                              rawXml: String,
+                              acceptedTime: Option[String] = None
                             ) extends ChrisResponse
 
   final case class Errored(
@@ -90,7 +100,7 @@ object ChrisResponse:
                             rawXml: String
                           ) extends ChrisResponse:
 
-    def isBusinessReject: Boolean = errors.exists(_.isBusiness)
+    def isBusinessReject: Boolean = errors.exists(_.isDepartmental)
 
     def fieldErrors: Seq[GovTalkError] =
       val located = errors.filter(_.location.isDefined)
@@ -100,7 +110,8 @@ object ChrisResponse:
                                  correlationId: Option[String],
                                  pollIntervalSeconds: Option[Int],
                                  responseEndPoint: Option[String],
-                                 rawXml: String
+                                 rawXml: String,
+                                 acceptedTime: Option[String] = None
                                ) extends ChrisResponse
 
   final case class TransportError(message: String, rawXml: String = "<transport-error/>") extends ChrisResponse
@@ -269,14 +280,10 @@ object UniversalStatus:
       case _                  => false
 
   private def isDepartmentalBusiness(errors: Seq[GovTalkError]): Boolean =
-    errors.exists { e =>
-      e.number.contains("3001") &&
-        e.raisedBy.equalsIgnoreCase("department") &&
-        e.errorType.equalsIgnoreCase("business")
-    }
+    errors.exists(_.isDepartmental)
 
-  private def resetsToStarted(errors: Seq[GovTalkError]): Boolean =
-    errors.exists(e => e.number.exists(ResetToStartedNumbers.contains))
+  def resetsToStarted(errors: Seq[GovTalkError]): Boolean =
+    errors.exists(_.number.exists(ResetToStartedNumbers.contains))
 
   private def isTimeout(message: String): Boolean =
     val m = message.toLowerCase

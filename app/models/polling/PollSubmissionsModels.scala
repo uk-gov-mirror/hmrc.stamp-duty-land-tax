@@ -14,12 +14,16 @@
  * limitations under the License.
  */
 
-package scheduler
+package models.polling
 
-object ScheduleStatus {
+import play.api.libs.json.{Json, OFormat}
 
-  sealed trait JobFailed
-  case class MongoUnlockException(ex: Exception) extends JobFailed
-  case class FailedToPurgeReturns(ex: Exception) extends JobFailed
-  case class FailedToPollSubmissions(ex: Exception) extends JobFailed
+case class SubmissionForPolling(submissionId: String, storn: String, returnResourceRef: String, submissionStatus: String)
+object SubmissionForPolling {
+  implicit val format: OFormat[SubmissionForPolling] = Json.format[SubmissionForPolling]
+}
+
+case class SubmissionsForPollingResponse(submissions: List[SubmissionForPolling])
+object SubmissionsForPollingResponse {
+  implicit val format: OFormat[SubmissionsForPollingResponse] = Json.format[SubmissionsForPollingResponse]
 }

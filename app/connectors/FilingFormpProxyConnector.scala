@@ -22,7 +22,7 @@ import play.api.Logging
 import play.api.libs.json.Json
 import play.api.libs.ws.JsonBodyWritables.*
 import uk.gov.hmrc.http.HttpReads.Implicits.*
-import uk.gov.hmrc.http.client.HttpClientV2
+import uk.gov.hmrc.http.client.{HttpClientV2, RequestBuilder}
 import uk.gov.hmrc.http.{HeaderCarrier, HttpReads, HttpResponse, StringContextOps, UpstreamErrorResponse}
 import uk.gov.hmrc.play.bootstrap.config.ServicesConfig
 
@@ -37,6 +37,14 @@ class FilingFormpProxyConnector @Inject()(http: HttpClientV2,
   private val formpPath = config.baseUrl("formp-proxy") + "/formp-proxy"
   private val stubPath = config.baseUrl("stamp-duty-land-tax-stub") + "/stamp-duty-land-tax-stub"
   val stubFormPBool: Boolean = config.getBoolean("features.stub-formp-enabled")
+  private val internalAuthToken: String = config.getString("internal-auth.token")
+
+  private def scheduledJobAuth(builder: RequestBuilder)(implicit hc: HeaderCarrier): RequestBuilder =
+    if hc.authorization.isEmpty then
+      logger.info("[FilingFormpProxyConnector] no bearer token, using internal-auth")
+      builder.setHeader("Authorization" -> internalAuthToken)
+    else builder
+
 
   def createReturn(createReturnRequest: CreateReturnRequest)(implicit hc: HeaderCarrier): Future[CreateReturnResult] =
     val url: URL = if(stubFormPBool) url"$stubPath/create/return" else url"$formpPath/create/return"
@@ -55,12 +63,12 @@ class FilingFormpProxyConnector @Inject()(http: HttpClientV2,
 
   def getFullReturn(getReturnByRefRequest: GetReturnByRefRequest)(implicit hc: HeaderCarrier): Future[FullReturn] =
     val url: URL = if(stubFormPBool) url"$stubPath/retrieve-return" else url"$formpPath/retrieve-return"
-    http.post(url)
+    scheduledJobAuth(http.post(url))
       .withBody(Json.toJson(getReturnByRefRequest))
       .execute[FullReturn]
       .recover {
         case e: UpstreamErrorResponse =>
-          logger.error(s"[FormpProxyConnector][]: Upstream error - ${e.getMessage}")
+          logger.error(s"[FormpProxyConnector][getFullReturn]: Upstream error - ${e.getMessage}")
           throw e
         case e: Throwable =>
           logger.error(s"[FormpProxyConnector][getFullReturn]: ${e.getMessage}")
@@ -480,7 +488,7 @@ class FilingFormpProxyConnector @Inject()(http: HttpClientV2,
   
   def updateSubmission(updateSubmissionRequest: UpdateSubmissionRequest)(implicit hc: HeaderCarrier): Future[UpdateSubmissionReturn] =
     val url: URL = if(stubFormPBool) url"$stubPath/filing/update/submission" else url"$formpPath/filing/update/submission"
-    http.post(url)
+    scheduledJobAuth(http.post(url))
       .withBody(Json.toJson(updateSubmissionRequest))
       .execute[HttpResponse]
       .map { response =>
@@ -502,7 +510,7 @@ class FilingFormpProxyConnector @Inject()(http: HttpClientV2,
 
   def createSubmissionErrorDetail(createSubmissionErrorDetailRequest: CreateSubmissionErrorDetailRequest)(implicit hc: HeaderCarrier): Future[CreateSubmissionErrorDetailReturn] =
     val url: URL = if(stubFormPBool) url"$stubPath/filing/submission-error-detail" else url"$formpPath/filing/submission-error-detail"
-    http.post(url)
+    scheduledJobAuth(http.post(url))
       .withBody(Json.toJson(createSubmissionErrorDetailRequest))
       .execute[HttpResponse]
       .map { response =>
@@ -568,7 +576,7 @@ class FilingFormpProxyConnector @Inject()(http: HttpClientV2,
 
   def resetGovTalkStatus(resetGovTalkStatusRequest: ResetGovTalkStatusRequest)(implicit hc: HeaderCarrier): Future[GovTalkStatusReturn] =
     val url: URL = if(stubFormPBool) url"$stubPath/filing/reset/govtalk-status/reset" else url"$formpPath/filing/reset/govtalk-status/reset"
-    http.post(url)
+    scheduledJobAuth(http.post(url))
       .withBody(Json.toJson(resetGovTalkStatusRequest))
       .execute[HttpResponse]
       .map { response =>
@@ -590,7 +598,7 @@ class FilingFormpProxyConnector @Inject()(http: HttpClientV2,
 
   def updateGovTalkStatus(updateGovTalkStatusRequest: UpdateGovTalkStatusRequest)(implicit hc: HeaderCarrier): Future[GovTalkStatusReturn] =
     val url: URL = if(stubFormPBool) url"$stubPath/filing/update/govtalk-status" else url"$formpPath/filing/update/govtalk-status"
-    http.post(url)
+    scheduledJobAuth(http.post(url))
       .withBody(Json.toJson(updateGovTalkStatusRequest))
       .execute[HttpResponse]
       .map { response =>
@@ -634,7 +642,7 @@ class FilingFormpProxyConnector @Inject()(http: HttpClientV2,
 
   def updateGovTalkStatusLock(updateGovTalkStatusLockRequest: UpdateGovTalkStatusLockRequest)(implicit hc: HeaderCarrier): Future[GovTalkStatusReturn] =
     val url: URL = if(stubFormPBool) url"$stubPath/filing/update/govtalk-status/lock" else url"$formpPath/filing/update/govtalk-status/lock"
-    http.post(url)
+    scheduledJobAuth(http.post(url))
       .withBody(Json.toJson(updateGovTalkStatusLockRequest))
       .execute[HttpResponse]
       .map { response =>
@@ -656,7 +664,7 @@ class FilingFormpProxyConnector @Inject()(http: HttpClientV2,
 
   def updateGovTalkStatistics(updateGovTalkStatisticsRequest: UpdateGovTalkStatisticsRequest)(implicit hc: HeaderCarrier): Future[GovTalkStatusReturn] =
     val url: URL = if(stubFormPBool) url"$stubPath/filing/update/govtalk-status/statistics" else url"$formpPath/filing/update/govtalk-status/statistics"
-    http.post(url)
+    scheduledJobAuth(http.post(url))
       .withBody(Json.toJson(updateGovTalkStatisticsRequest))
       .execute[HttpResponse]
       .map { response =>
@@ -700,7 +708,7 @@ class FilingFormpProxyConnector @Inject()(http: HttpClientV2,
 
   def selectGovTalkStatus(selectGovTalkStatusRequest: SelectGovTalkStatusRequest)(implicit hc: HeaderCarrier): Future[SelectGovTalkStatusResponse] =
     val url: URL = if(stubFormPBool) url"$stubPath/filing/govtalk-status" else url"$formpPath/filing/govtalk-status"
-    http.get(url)
+    scheduledJobAuth(http.get(url))
       .withBody(Json.toJson(selectGovTalkStatusRequest))
       .execute[SelectGovTalkStatusResponse]
       .recover {

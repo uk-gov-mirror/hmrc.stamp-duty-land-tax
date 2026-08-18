@@ -19,7 +19,7 @@ package scheduler
 import org.apache.pekko.actor.{Actor, ActorLogging, Props}
 import play.api.Logging
 import scheduler.SchedulingActor.*
-import service.PurgeReturnsService
+import service.{PollSubmissionsService, PurgeReturnsService}
 
 class SchedulingActor extends Actor with ActorLogging with Logging {
 
@@ -31,7 +31,8 @@ class SchedulingActor extends Actor with ActorLogging with Logging {
 }
 
 object MongoLockKeys {
-  val purgeReturnsLock: String = "PurgeReturnsJob"
+  val purgeReturnsLock: String    = "PurgeReturnsJob"
+  val pollSubmissionsLock: String = "PollSubmissionsJob"
 }
 
 object SchedulingActor {
@@ -43,5 +44,8 @@ object SchedulingActor {
   def props: Props = Props[SchedulingActor]()
 
   case class PurgeReturns(service: PurgeReturnsService)
+      extends ScheduledMessage[Either[ScheduleStatus.JobFailed, List[String]]]
+
+  case class PollSubmissions(service: PollSubmissionsService)
       extends ScheduledMessage[Either[ScheduleStatus.JobFailed, List[String]]]
 }

@@ -19,7 +19,7 @@ package uk.gov.hmrc.stampdutylandtax.models.submission
 import models.submission._
 import org.scalatest.matchers.must.Matchers
 import org.scalatest.wordspec.AnyWordSpec
-import play.api.libs.json.Json
+import play.api.libs.json.{JsObject, Json}
 
 class GovTalkStatusModelsSpec extends AnyWordSpec with Matchers {
 
@@ -366,8 +366,8 @@ class GovTalkStatusModelsSpec extends AnyWordSpec with Matchers {
            |"userIdentifier":"USER-1",
            |"formResultId":"FR-1",
            |"correlationId":"CORR-1",
-           |"endStateTimestamp":"2026-01-02T09:05:00Z",
-           |"protocolStatus":"ACKNOWLEDGED"
+           |"pollInterval":0,
+           |"gatewayUrl":"https://gateway.example/submit"
            |}
            |""".stripMargin)
 
@@ -375,10 +375,23 @@ class GovTalkStatusModelsSpec extends AnyWordSpec with Matchers {
       model.userIdentifier mustBe "USER-1"
       model.formResultId mustBe "FR-1"
       model.correlationId mustBe "CORR-1"
-      model.endStateTimestamp mustBe "2026-01-02T09:05:00Z"
-      model.protocolStatus mustBe "ACKNOWLEDGED"
+      model.pollInterval mustBe 0
+      model.gatewayUrl mustBe "https://gateway.example/submit"
 
       Json.toJson(model).as[UpdateGovTalkStatusCorrelationIdRequest] mustBe model
+    }
+
+    "write the field names formp-proxy requires" in {
+      val model = UpdateGovTalkStatusCorrelationIdRequest(
+        userIdentifier = "USER-1",
+        formResultId   = "FR-1",
+        correlationId  = "CORR-1",
+        pollInterval   = 0,
+        gatewayUrl     = "https://gateway.example/submit"
+      )
+
+      Json.toJson(model).as[JsObject].keys mustBe
+        Set("userIdentifier", "formResultId", "correlationId", "pollInterval", "gatewayUrl")
     }
   }
 

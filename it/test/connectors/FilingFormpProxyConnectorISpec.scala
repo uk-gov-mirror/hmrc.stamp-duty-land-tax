@@ -24,9 +24,10 @@ import org.scalatest.BeforeAndAfterEach
 import org.scalatest.concurrent.{IntegrationPatience, ScalaFutures}
 import org.scalatest.matchers.must.Matchers
 import org.scalatest.wordspec.AnyWordSpec
+import play.api.http.HeaderNames.AUTHORIZATION
 import play.api.http.Status.*
 import play.api.libs.json.Json
-import uk.gov.hmrc.http.{HeaderCarrier, UpstreamErrorResponse}
+import uk.gov.hmrc.http.{Authorization, HeaderCarrier, UpstreamErrorResponse}
 
 class FilingFormpProxyConnectorISpec extends AnyWordSpec
   with Matchers
@@ -36,6 +37,8 @@ class FilingFormpProxyConnectorISpec extends AnyWordSpec
   with BeforeAndAfterEach {
 
   implicit val hc: HeaderCarrier = HeaderCarrier()
+
+  private val internalAuthToken: String = app.configuration.get[String]("internal-auth.token")
 
   private val connector: FilingFormpProxyConnector = app.injector.instanceOf[FilingFormpProxyConnector]
 
@@ -208,6 +211,32 @@ class FilingFormpProxyConnectorISpec extends AnyWordSpec
       connector.createReturn(payload1).futureValue mustBe CreateReturnResult(returnResourceRef = returnResourceRef)
       connector.createReturn(payload2).futureValue mustBe CreateReturnResult(returnResourceRef = returnResourceRef)
       connector.createReturn(payload3).futureValue mustBe CreateReturnResult(returnResourceRef = returnResourceRef)
+    }
+  }
+
+  "the internal-auth token" should {
+
+    val url = "/formp-proxy/retrieve-return"
+
+    val payload = GetReturnByRefRequest(returnResourceRef = returnResourceRef, storn = stornId)
+
+    def stubRetrieveReturn(): Unit =
+      stubFor(post(urlPathEqualTo(url)).willReturn(aResponse().withStatus(OK).withBody("""{"stornId":"STORN123456"}""")))
+
+    "be sent when the caller has no bearer token, as a scheduled poll does not" in {
+      stubRetrieveReturn()
+
+      connector.getFullReturn(payload).futureValue
+
+      verify(postRequestedFor(urlPathEqualTo(url)).withHeader(AUTHORIZATION, equalTo(internalAuthToken)))
+    }
+
+    "not replace the bearer token a signed in user is already carrying" in {
+      stubRetrieveReturn()
+
+      connector.getFullReturn(payload)(HeaderCarrier(authorization = Some(Authorization("Bearer user-token")))).futureValue
+
+      verify(postRequestedFor(urlPathEqualTo(url)).withHeader(AUTHORIZATION, equalTo("Bearer user-token")))
     }
   }
 
@@ -3120,11 +3149,11 @@ class FilingFormpProxyConnectorISpec extends AnyWordSpec
     val url = "/formp-proxy/filing/update/govtalk-status/correlation-Id"
 
     val payload = UpdateGovTalkStatusCorrelationIdRequest(
-      userIdentifier    = "USR-0001",
-      formResultId      = "FR-0001",
-      correlationId     = "COR-0002",
-      endStateTimestamp = "2026-06-30T10:05:00Z",
-      protocolStatus    = "ACCEPTED"
+      userIdentifier = "USR-0001",
+      formResultId   = "FR-0001",
+      correlationId  = "COR-0002",
+      pollInterval   = 0,
+      gatewayUrl     = "http://localhost:6995/chris"
     )
 
     "return GovTalkStatusReturn(success=true) when BE returns OK" in {
@@ -3323,9 +3352,9 @@ class FilingFormpProxyConnectorISpec extends AnyWordSpec
       formResultId         = Some("FR-0001"),
       correlationId        = Some("COR-0001"),
       formLock             = Some("N"),
-      createTimestamp      = Some("2026-06-30T10:00:00Z"),
-      endStateTimestamp    = Some("2026-06-30T10:05:00Z"),
-      lastMessageTimestamp = Some("2026-06-30T10:01:00Z"),
+      createTimestamp      = Some("2026-06-30 10:00:00"),
+      endStateTimestamp    = Some("2026-06-30 10:05:00"),
+      lastMessageTimestamp = Some("2026-06-30 10:01:00"),
       numberOfPolls        = Some("1"),
       pollInterval         = Some("30"),
       protocolStatus       = Some("ACCEPTED"),

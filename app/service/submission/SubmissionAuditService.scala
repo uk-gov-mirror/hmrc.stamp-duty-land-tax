@@ -50,10 +50,10 @@ class SubmissionAuditService @Inject() (
                       resp: ChrisResponse)
                      (implicit hc: HeaderCarrier): Future[Unit] =
     resp match
-      case ChrisResponse.Completed(Some(utrn), _, _, _, _) =>
+      case ChrisResponse.Completed(Some(utrn), _, _, _, _, _) =>
         send(AuditSuccess, successDetail(storn, utrn, fullReturn), returnId, correlationId)
 
-      case ChrisResponse.Completed(None, _, _, _, _) =>
+      case ChrisResponse.Completed(None, _, _, _, _, _) =>
         logger.warn(s"[SubmissionAuditService] success envelope with no UTRN returnId=$returnId corrId=$correlationId")
         send(AuditFailure, failureDetail(storn, correlationId, "no_receipt", Nil, None), returnId, correlationId)
 
